@@ -180,8 +180,10 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   display_index_ = display_index;
   nviews_ = only_screen_ >= 0 ? 1 : SCREENS;
   int w = 0, h = 0;
+  const bool hcge_wanted = std::getenv("DS_HCGE") != nullptr && only_screen_ < 0;
+  if (hcge_wanted) { w = 320; h = 240; }
   if (only_screen_ >= 0) { w = static_cast<int>(SCREEN_W) * scale; h = static_cast<int>(SCREEN_H) * scale; }
-  else natural_size(layout_, scale, w, h);
+  else if (!hcge_wanted) natural_size(layout_, scale, w, h);
   {
     // A windowed window is the presented side: portrait for a rotated layout.
     int r = rot_wanted_;
@@ -201,6 +203,12 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   rot = ((rot % 360) + 360) % 360;
   if (rot != 0 && rot != 90 && rot != 180 && rot != 270) { std::fprintf(stderr, "video: rotation %d not supported; 0\n", rot); rot = 0; }
   rot_ = 0;
+
+  if (hcge_wanted && hcge_.open()) {
+    hcge_w_ = w; hcge_h_ = h;
+    layout();
+    return true;
+  }
 
   // Display-engine tier: the hardware scales a DS-resolution canvas, so
   // there is no renderer and no scaling here at all; the views are laid out
@@ -363,6 +371,7 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
 }
 
 void Display::close() {
+  hcge_.close();
   if (disp_) { disp_->close(); disp_.reset(); }
   if (out_) { out_->close(); out_.reset(); }
   frame_px_ = nullptr;
@@ -482,6 +491,16 @@ void Display::place(const Layout& layout_, int w, int h, View views_[SCREENS], I
 }
 
 void Display::draw(const u32* const fb[SCREENS]) {
+  if (hcge_) {
+    int screens[SCREENS], rects[SCREENS][4]; bool shown[SCREENS];
+    for (int i = 0; i < SCREENS; ++i) {
+      screens[i] = views_[i].screen; shown[i] = views_[i].shown;
+      rects[i][0] = views_[i].rect.x; rects[i][1] = views_[i].rect.y;
+      rects[i][2] = views_[i].rect.w; rects[i][3] = views_[i].rect.h;
+    }
+    hcge_.present(fb, screens, rects, shown, inset_alpha_, hcge_w_, hcge_h_);
+    return;
+  }
   if (disp_) {
     // Whatever the frontend drew (or stopped drawing) goes to the overlay
     // layer with this frame, so the two reach the panel together.
@@ -519,7 +538,7 @@ void Display::set_page(bool on) {
 }
 
 void Display::toggle_fullscreen() {
-  if (disp_) return;   // the panel is the window
+  if (disp_ || hcge_) return;   // the panel is the window
   fullscreen_ = !fullscreen_;
   SDL_SetWindowFullscreen(win_, fullscreen_ ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
   layout();
@@ -529,7 +548,13 @@ void Display::toggle_fullscreen() {
 
 void Display::set_layout(const Layout& l) {
   if (only_screen_ >= 0) return;
-  if (disp_) { layout_ = l; layout(); if (chunky_) build_source_scale(); return; }
+  if (disp_ || hcge_) {
+    layout_ = l;
+    if (hcge_) natural_size(layout_, 1.0, hcge_w_, hcge_h_);
+    layout();
+    if (disp_ && chunky_) build_source_scale();
+    return;
+  }
   const Mode was = layout_.mode;
   layout_ = l;
   if (!fullscreen_ && was != l.mode) {
@@ -577,6 +602,7 @@ bool Display::map_point(int wx, int wy, int& screen, int& sx, int& sy) const {
 // The renderer's output size, or the window surface's when there is no
 // renderer. Both are in pixels, which is what the views are in.
 bool Display::out_size(int& w, int& h) const {
+  if (hcge_) { w = hcge_w_; h = hcge_h_; return true; }
   if (disp_) { w = disp_->logical_w(); h = disp_->logical_h(); return true; }
   if (ren_) return SDL_GetRendererOutputSize(ren_, &w, &h) == 0;
   if (!win_) return false;

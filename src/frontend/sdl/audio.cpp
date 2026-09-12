@@ -18,7 +18,7 @@ bool Audio::open(bool native_rate) {
     // changes anything. SDL 2.24 can ask the default device; before that
     // 48 kHz is what every such daemon runs at.
     int freq = 48000;
-#if SDL_VERSION_ATLEAST(2, 24, 0)
+#if SDL_VERSION_ATLEAST(2, 24, 0) && !defined(DSPERATE_OLD_SDL)
     // Only the daemon backends implement the query; SDL 2.30's ALSA backend
     // crashes inside it (RG DS, 2026-09-04) rather than failing.
     const char* drv = SDL_GetCurrentAudioDriver();

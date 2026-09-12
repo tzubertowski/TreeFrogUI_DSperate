@@ -1166,6 +1166,7 @@ int main(int argc, char** argv) {
       SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     } else std::fprintf(stderr, "%s: this SDL2 has no headless video driver; its own driver will also open the panel\n", tier);
   };
+  if (std::getenv("DS_HCGE")) go_headless("HCGE");
   const std::string disp_mode = cfg.str("video.disp");
   const bool disp_auto = disp_mode.empty() || disp_mode == "auto";
   bool& use_disp = vs.use_disp;
