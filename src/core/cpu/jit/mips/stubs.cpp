@@ -1,14 +1,23 @@
 #include "core/cpu/jit/jit_internal.h"
 #include "core/cpu/jit/mips/convention.h"
 #include "core/cpu/jit/mips/emit.h"
+#include "core/sched/scheduler.h"
+namespace ds { extern "C" SliceNext ds_slice_next(void*); }
 namespace ds::jit::backend {
 using namespace ds::jit;
+extern "C" void ds_jit_mips_run_loop(void* scheduler) {
+  for (;;) {
+    ds::SliceNext next = ds::ds_slice_next(scheduler);
+    if (!next.ctx) return;
+    ds::jit::rt().enter(next.ctx, next.native);
+  }
+}
 void emit_stubs(Runtime& rt) {
   MipsEmitter e(rt.arena + LUT_AREA, rt.cap - LUT_AREA);
   rt.enter = reinterpret_cast<void (*)(CpuContext*, const void*)>(e.cur());
   // a0=CpuContext, a1=native. Keep the ABI frame-free for this first tier.
   e.jalr(31,5); e.nop(); e.jr(31); e.nop();
-  rt.enter_light=e.cur(); rt.run_loop=nullptr; rt.exit_key=e.cur(); rt.exit_key_lit=nullptr;
+  rt.enter_light=e.cur(); rt.run_loop=&ds_jit_mips_run_loop; rt.exit_key=e.cur(); rt.exit_key_lit=nullptr;
   rt.exit_r15=nullptr; rt.call_pure=nullptr; rt.call_full=nullptr; rt.call2=nullptr; rt.poll=nullptr; rt.flush_exit=nullptr;
   rt.stubs_end=LUT_AREA+e.size(); rt.pos=rt.stubs_end;
   for(auto& c:rt.cpus){c.dispatch=nullptr;c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;}
