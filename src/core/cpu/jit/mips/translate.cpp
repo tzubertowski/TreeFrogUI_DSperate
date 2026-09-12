@@ -7,7 +7,7 @@ namespace ds::jit::backend {
 bool translate_block(JitCpu& jc, u32 key, u8* buf, size_t cap, Block& b, u32& size) {
   const u32 start = key_pc(key), step = key_thumb(key) ? 2 : 4; u8* host = jc.ctx->page_table.read_ptr(start); if (!host || cap < 64) return false;
   MipsEmitter e(buf, cap); e.addiu(29, 29, -8); e.sw(31, 4, 29); std::vector<size_t> exits; u32 count = 0, addr = start;
-  for (; count < 8; ++count, addr += step) {
+  for (; count < 32; ++count, addr += step) {
     u8* p = jc.ctx->page_table.read_ptr(addr); if (!p) break; u32 instr = 0; std::memcpy(&instr, p, step);
     e.lui(5, instr >> 16); e.ori(5, 5, instr); const u32 k = make_key(addr, key_thumb(key));
     e.lui(6, k >> 16); e.ori(6, 6, k); e.load_ptr(25, reinterpret_cast<const void*>(&ds_jit_mips_fallback)); e.jalr(31, 25); e.nop();
