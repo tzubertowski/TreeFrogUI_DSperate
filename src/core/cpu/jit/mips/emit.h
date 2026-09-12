@@ -21,5 +21,6 @@ public:
   size_t bnez(u32 r){size_t p=n_; w(0x14000000u|(r<<21)); return p;}
   void patch_branch(size_t p,size_t target){s32 d=static_cast<s32>((target-(p+4))/4);u32 x;std::memcpy(&x,p_+p,4);x=(x&0xffff0000u)|(static_cast<u32>(d)&0xffffu);std::memcpy(p_+p,&x,4);}
   void load_ptr(u32 r,const void* p){uintptr_t x=reinterpret_cast<uintptr_t>(p);lui(r,x>>16);ori(r,r,x);}
+  void patch_ptr(size_t p,u32 r,const void* q){uintptr_t x=reinterpret_cast<uintptr_t>(q);patch(p_+p,0x3c000000u|(r<<16)|(x>>16));patch(p_+p+4,0x34000000u|(r<<21)|(r<<16)|(x&0xffff));}
 };
 }
