@@ -18,6 +18,8 @@ public:
   void jr(u32 r){w(0x00000008u|(r<<21));} void jalr(u32 d,u32 r){w(0|(r<<21)|(d<<11)|9);}
   void nop(){w(0);}
   void j(u32 target){w(0x08000000u|((target>>2)&0x03ffffff));}
+  size_t bnez(u32 r){size_t p=n_; w(0x14000000u|(r<<21)); return p;}
+  void patch_branch(size_t p,size_t target){s32 d=static_cast<s32>((target-(p+4))/4);u32 x;std::memcpy(&x,p_+p,4);x=(x&0xffff0000u)|(static_cast<u32>(d)&0xffffu);std::memcpy(p_+p,&x,4);}
   void load_ptr(u32 r,const void* p){uintptr_t x=reinterpret_cast<uintptr_t>(p);lui(r,x>>16);ori(r,r,x);}
 };
 }
