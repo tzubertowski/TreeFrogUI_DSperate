@@ -31,16 +31,22 @@ extern "C" ds::u32 ds_jit_mips_fallback(ds::CpuContext* c, ds::u32 instr, ds::u3
 extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext* c, const ds::u32* ins, const ds::u32* keys, ds::u32 n) {
   for (ds::u32 i = 0; i < n; ++i) {
     const ds::u32 x = ins[i];
-    const bool fast = ((x >> 28) == 0xE) && ((x & 0x0E000000u) == 0x02000000u) && !(x & (1u << 20)) && (((x >> 12) & 15) != 15);
+    const bool fast = ((x >> 28) == 0xE) && !(x & (1u << 20)) && (((x >> 12) & 15) != 15) && ((((x & 0x0E000000u) == 0x02000000u)) || ((x & 0x0E000010u) == 0));
     if (fast) {
       const ds::u32 op = (x >> 21) & 15, rn = (x >> 16) & 15, rd = (x >> 12) & 15;
-      const ds::u32 imm = ds::rotr32(x & 255u, ((x >> 8) & 15u) * 2u);
+      ds::u32 imm = 0;
+      if ((x & 0x0E000000u) == 0x02000000u) imm = ds::rotr32(x & 255u, ((x >> 8) & 15u) * 2u);
+      else {
+        const ds::u32 rm = x & 15u, sh = (x >> 7) & 31u, typ = (x >> 5) & 3u, v = c->hot.regs[rm];
+        if (!sh && typ != 0) { if (op == 13) goto slow; else goto slow; }
+        imm = typ == 0 ? (v << sh) : typ == 1 ? (v >> sh) : typ == 2 ? static_cast<ds::u32>(static_cast<ds::s32>(v) >> sh) : ((v >> sh) | (v << (32 - sh)));
+      }
       c->hot.regs[15] = ds::jit::key_r15(keys[i]);
       const ds::u32 a = c->hot.regs[rn]; ds::u32 v = 0;
-      switch (op) { case 0: v = a & imm; break; case 1: v = a ^ imm; break; case 2: v = a - imm; break; case 4: v = a + imm; break; case 12: v = a | imm; break; case 13: v = imm; break; default: ds::jit::jit_h_fallback(c, x, keys[i]); goto next; }
+      switch (op) { case 0: v = a & imm; break; case 1: v = a ^ imm; break; case 2: v = a - imm; break; case 4: v = a + imm; break; case 12: v = a | imm; break; case 13: v = imm; break; default: goto slow; }
       c->hot.regs[rd] = v; ds::charge_C(*c); c->hot.regs[15] += 4; continue;
     }
-    if (ds::jit::jit_h_fallback(c, ins[i], keys[i])) return 1;
+slow: if (ds::jit::jit_h_fallback(c, ins[i], keys[i])) return 1;
 next:;
   }
   return 0;
