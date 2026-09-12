@@ -6,10 +6,29 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 
 namespace ds::sdl {
 
 bool Audio::open(bool native_rate) {
+  if (std::getenv("DS_HCGE")) {
+    using Init = int (*)(void*, int, int);
+    const char* driver = std::getenv("TF_DRIVER");
+    stock_ = ::dlopen(driver ? driver : "/mnt/sdcard/cubegm/driver.so", RTLD_NOW | RTLD_GLOBAL);
+    auto init = stock_ ? reinterpret_cast<Init>(::dlsym(stock_, "sound_driver_init")) : nullptr;
+    stock_play_ = stock_ ? reinterpret_cast<decltype(stock_play_)>(::dlsym(stock_, "sound_driver_playframe")) : nullptr;
+    stock_close_ = stock_ ? reinterpret_cast<decltype(stock_close_)>(::dlsym(stock_, "sound_driver_deinit")) : nullptr;
+    if (!init || !stock_play_ || init(nullptr, 48000, 2) < 0) {
+      std::fprintf(stderr, "audio: stock driver unavailable\n");
+      if (stock_) ::dlclose(stock_);
+      stock_ = nullptr; stock_play_ = nullptr; stock_close_ = nullptr;
+      return false;
+    }
+    rate_ = 48000; frame_bytes_ = (rate_ * 4) / 60;
+    prev_l_ = prev_r_ = 0; phase_ = 0;
+    std::fprintf(stderr, "audio: SF3000 stock driver, 48000 Hz stereo\n");
+    return true;
+  }
   SDL_AudioSpec want{}, got{};
   want.freq = static_cast<int>(spu::Spu::SAMPLE_RATE);
   if (native_rate) {
@@ -46,6 +65,7 @@ bool Audio::open(bool native_rate) {
 
 void Audio::close() {
   if (dev_) { SDL_CloseAudioDevice(dev_); dev_ = 0; }
+  if (stock_) { if (stock_close_) stock_close_(); ::dlclose(stock_); stock_ = nullptr; stock_play_ = nullptr; stock_close_ = nullptr; }
   if (cap_) { SDL_CloseAudioDevice(cap_); cap_ = 0; }
 }
 
@@ -80,11 +100,11 @@ const std::vector<s16>& Audio::capture() {
 }
 
 void Audio::push(NDS& nds, bool drop) {
-  if (drop && (!dev_ || SDL_GetQueuedAudioSize(dev_) > frame_bytes_ * TARGET_FRAMES)) { nds.spu.drain(); return; }
+  if (drop && ((!dev_ && !stock_) || (dev_ && SDL_GetQueuedAudioSize(dev_) > frame_bytes_ * TARGET_FRAMES))) { nds.spu.drain(); return; }
   s16 buf[2048 * 2];
   size_t n;
   while ((n = nds.spu.take(buf, 2048)) != 0) {
-    if (!dev_) continue;
+    if (!dev_ && !stock_) continue;
     s16* out = buf;
     size_t m = n;
     if (rate_ != spu::Spu::SAMPLE_RATE) {
@@ -114,7 +134,8 @@ void Audio::push(NDS& nds, bool drop) {
       const int g = volume_ * 256 / 100;
       for (size_t i = 0; i < m * 2; ++i) out[i] = static_cast<s16>((out[i] * g) >> 8);
     }
-    SDL_QueueAudio(dev_, out, static_cast<u32>(m * 4));
+    if (stock_) stock_play_(out, static_cast<int>(m));
+    else SDL_QueueAudio(dev_, out, static_cast<u32>(m * 4));
   }
 }
 
@@ -123,16 +144,19 @@ void Audio::set_volume(int percent) {
 }
 
 void Audio::pause(bool p) {
+  if (stock_) return;
   if (!dev_) return;
   SDL_PauseAudioDevice(dev_, p ? 1 : 0);
   if (p) SDL_ClearQueuedAudio(dev_);
 }
 
 double Audio::queued_frames() const {
+  if (stock_) return 0;
   return dev_ ? static_cast<double>(SDL_GetQueuedAudioSize(dev_)) / frame_bytes_ : 0.0;
 }
 
 void Audio::pace() {
+  if (stock_) return;
   if (!dev_) return;
   // Above the target the emulator is ahead of the speakers: wait. Below it the
   // machine cannot keep up and we let it run flat out. The wait is bounded so
