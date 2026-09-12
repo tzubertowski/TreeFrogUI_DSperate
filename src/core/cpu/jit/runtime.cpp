@@ -655,7 +655,9 @@ static Block* adopt(JitCpu& jc, u32 key) {
     }
   }
   install(jc, d.b);
+#if defined(__aarch64__) || defined(__arm__)
   asm volatile("isb" ::: "memory");   // this PE may fetch the adopted code next
+#endif
   ++st_adopted;
   seed(jc, *d.b);
   return d.b;
