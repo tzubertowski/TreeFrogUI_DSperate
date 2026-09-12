@@ -11,7 +11,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-option(DSPERATE_JIT      "Build the recompiler (AArch64 and ARMv7 hosts)"          ON)
+option(DSPERATE_JIT      "Build the recompiler (AArch64, ARMv7, and MIPS hosts)"   ON)
+option(DSPERATE_MIPS_JIT "Enable the experimental MIPS JIT backend"              OFF)
 option(DSPERATE_NEON     "Build NEON renderer kernels (AArch64 or ARMv7+NEON)"    ON)
 option(DSPERATE_TESTS    "Build unit tests"                                       ON)
 option(DSPERATE_HEADLESS "Build the headless frontend"                            ON)
@@ -28,18 +29,30 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|armv7|armv7l|armv7a|armhf)$")
   set(DSPERATE_HOST_AARCH64 OFF)
   set(DSPERATE_HOST_ARM32 ON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips|mipsel|mips32|mips32el)$")
+  set(DSPERATE_HOST_AARCH64 OFF)
+  set(DSPERATE_HOST_ARM32 OFF)
+  set(DSPERATE_HOST_MIPS ON)
 else()
   set(DSPERATE_HOST_AARCH64 OFF)
   set(DSPERATE_HOST_ARM32 OFF)
+  set(DSPERATE_HOST_MIPS OFF)
 endif()
 
-if(NOT DSPERATE_HOST_AARCH64 AND NOT DSPERATE_HOST_ARM32 AND DSPERATE_JIT)
+if(NOT DSPERATE_HOST_AARCH64 AND NOT DSPERATE_HOST_ARM32 AND NOT DSPERATE_HOST_MIPS AND DSPERATE_JIT)
   message(STATUS "DSperate: host is ${CMAKE_SYSTEM_PROCESSOR}; JIT disabled (interpreter only)")
   set(DSPERATE_JIT OFF)
 endif()
 
-# ARMv7 NEON isn't IEEE-clean by default; pin VFPv4 + hard-float so results
-# can't silently differ from AArch64.
+if(DSPERATE_HOST_MIPS AND DSPERATE_JIT AND NOT DSPERATE_MIPS_JIT)
+  message(STATUS "DSperate: MIPS JIT is experimental; interpreter selected (set DSPERATE_MIPS_JIT=ON to test)")
+  set(DSPERATE_JIT OFF)
+endif()
+
+# On ARMv7 the kernels are built from the ARMv7-expressible NEON subset
+# (gpu/neon_compat.h).  ARMv7 NEON is not IEEE-clean for single precision in
+# its default mode, so ask for the VFPv4 unit and full float ABI rather than
+# leaving the compiler to pick a baseline that would quietly change results.
 if(DSPERATE_HOST_ARM32 AND DSPERATE_NEON)
   include(CheckCXXSourceCompiles)
   set(CMAKE_REQUIRED_FLAGS "-mfpu=neon-vfpv4 -mfloat-abi=hard")
