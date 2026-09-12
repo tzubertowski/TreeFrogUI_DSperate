@@ -18,5 +18,6 @@ public:
   void jr(u32 r){w(0x00000008u|(r<<21));} void jalr(u32 d,u32 r){w(0|(r<<21)|(d<<11)|9);}
   void nop(){w(0);}
   void j(u32 target){w(0x08000000u|((target>>2)&0x03ffffff));}
+  void load_ptr(u32 r,const void* p){uintptr_t x=reinterpret_cast<uintptr_t>(p);lui(r,x>>16);ori(r,r,x);}
 };
 }

@@ -18,7 +18,7 @@ docker run --rm --user "$(id -u):$(id -g)" --network host -v "$PWD:/src" -v "$(r
     -DCMAKE_CXX_FLAGS="-mips32r2 -mtune=74kc -mdspr2 -mhard-float -I/opt/sdl/usr/include -I/opt/sdl/usr/include/mipsel-linux-gnu" \
     -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc -L/device" \
     -DSDL2_INCLUDE_DIRS=/opt/sdl/usr/include/SDL2 \
-    -DDSPERATE_JIT=OFF -DDSPERATE_NEON=OFF -DDSPERATE_TESTS=OFF \
+    -DDSPERATE_JIT=ON -DDSPERATE_MIPS_JIT=ON -DDSPERATE_NEON=OFF -DDSPERATE_TESTS=OFF \
     -DDSPERATE_WAYLAND=OFF -DDSPERATE_CHEEVOS=OFF -DDSPERATE_HEADLESS=OFF
   PKG_CONFIG_LIBDIR=/opt/sdl/usr/lib/mipsel-linux-gnu/pkgconfig \
     PKG_CONFIG_SYSROOT_DIR=/opt/sdl cmake --build build/sf3000 -j"$(nproc)"
