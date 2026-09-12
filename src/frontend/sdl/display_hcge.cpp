@@ -57,18 +57,19 @@ void HcgeOut::close() {
 void HcgeOut::present(const u32* const fb[2], const int screen[2], const int rect[2][4],
                       const bool shown[2], u8 inset_alpha, int w, int h) {
   if (!present_ || w <= 0 || h <= 0) return;
+  const int out_w = 320, out_h = 240;
   auto& dst = frame_[page_++ & 1];
-  dst.assign(static_cast<size_t>(w) * h, 0);
+  dst.assign(static_cast<size_t>(out_w) * out_h, 0);
   for (int i = 0; i < 2; ++i) {
     if (!shown[i]) continue;
     const int* r = rect[i];
     for (int y = 0; y < r[3]; ++y) {
       const int sy = y * static_cast<int>(SCREEN_H) / r[3];
       for (int x = 0; x < r[2]; ++x) {
-        const int dx = r[0] + x, dy = r[1] + y;
-        if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
+        const int dx = (r[0] + x) * out_w / w, dy = (r[1] + y) * out_h / h;
+        if (dx < 0 || dx >= out_w || dy < 0 || dy >= out_h) continue;
         const u16 src = hcge_rgb565(fb[screen[i]][static_cast<size_t>(sy) * SCREEN_W + x * static_cast<int>(SCREEN_W) / r[2]]);
-        u16& out = dst[static_cast<size_t>(dy) * w + dx];
+        u16& out = dst[static_cast<size_t>(dy) * out_w + dx];
         if (i && inset_alpha < 255) {
           const unsigned a = inset_alpha + (inset_alpha >> 7), b = 256 - a;
           const unsigned r5 = (((src >> 11) * a + (out >> 11) * b) >> 8) & 31;
@@ -88,12 +89,12 @@ void HcgeOut::present(const u32* const fb[2], const int screen[2], const int rec
       const double seconds = now.tv_sec - started.tv_sec + (now.tv_nsec - started.tv_nsec) / 1e9;
       u32 hash = 2166136261u;
       for (size_t p = 0; p < dst.size(); p += 257) hash = (hash ^ dst[p]) * 16777619u;
-      std::fprintf(stderr, "hcge: frame=%u elapsed=%.3f fps=%.2f hash=%08x\n",
-                   frames + 1, seconds, frames ? frames / seconds : 0.0, hash);
+      std::fprintf(stderr, "hcge: frame=%u %dx%d->%dx%d elapsed=%.3f fps=%.2f hash=%08x\n",
+                   frames + 1, w, h, out_w, out_h, seconds, frames ? frames / seconds : 0.0, hash);
       std::fflush(stderr);
     }
     ++frames;
   }
-  present_(dst.data(), w, h, w * static_cast<int>(sizeof(u16)));
+  present_(dst.data(), out_w, out_h, out_w * static_cast<int>(sizeof(u16)));
 }
 } // namespace ds::sdl
