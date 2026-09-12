@@ -78,6 +78,10 @@ add_executable(test_config config_test.cpp ../src/frontend/sdl/config.cpp)
 target_link_libraries(test_config PRIVATE dsperate_core)
 add_test(NAME config COMMAND test_config)
 
+add_executable(test_hcge hcge_test.cpp ../src/frontend/sdl/display_hcge.cpp)
+target_link_libraries(test_hcge PRIVATE dsperate_core ${CMAKE_DL_LIBS})
+add_test(NAME hcge COMMAND test_hcge)
+
 # Input, for the menu's way back from a broken binding: the fallback layer and
 # the reachability warning both have to stay silent under the defaults, which
 # only a test will keep true. Guarded because it needs SDL2's headers, which

@@ -138,8 +138,24 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   sink_ = Sink::Count;
   const bool panel = only_screen_ < 0 && (panel_ == Sink::Disp || panel_ == Sink::Fbdev);
   int w = 0, h = 0;
+  const bool hcge_wanted = std::getenv("DS_HCGE") != nullptr && only_screen_ < 0;
+  if (hcge_wanted) { w = 320; h = 240; }
   if (only_screen_ >= 0) { w = static_cast<int>(SCREEN_W) * scale; h = static_cast<int>(SCREEN_H) * scale; }
-  else natural_size(layout_, scale, w, h);
+  else if (!hcge_wanted) natural_size(layout_, scale, w, h);
+  {
+    // A windowed window is the presented side: portrait for a rotated layout.
+    int r = rot_wanted_;
+    if (!r) if (const char* e = std::getenv("DS_ROTATE")) r = std::atoi(e);
+    r = ((r % 360) + 360) % 360;
+    if ((r == 90 || r == 270) && !disp_wanted_ && !fbdev_wanted_) std::swap(w, h);
+  }
+  const u32 flags = static_cast<u32>(SDL_WINDOW_RESIZABLE) | (fullscreen ? static_cast<u32>(SDL_WINDOW_FULLSCREEN_DESKTOP) : 0u);
+  win_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), w, h, flags);
+  if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return false; }
+  fullscreen_ = fullscreen;
+
+  // The panel's rotation, for whichever tier presents: set_rotation(), or
+  // DS_ROTATE as the spruce launcher passes it.
   int rot = rot_wanted_;
   if (!rot) if (const char* r = std::getenv("DS_ROTATE")) rot = std::atoi(r);
   rot = ((rot % 360) + 360) % 360;
@@ -151,10 +167,34 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   fullscreen_ = fullscreen;
   rot_ = 0;
 
-  if (panel && panel_ == Sink::Disp && open_disp(linear, vsync, rot)) { sink_ = Sink::Disp; return true; }
-  if (panel && panel_ == Sink::Fbdev) {
-    if (open_fbdev(vsync, rot)) { sink_ = Sink::Fbdev; return true; }
-    std::fprintf(stderr, "video.sink: /dev/fb0 not usable; using SDL\n");
+  if (hcge_wanted && hcge_.open()) {
+    hcge_w_ = w; hcge_h_ = h;
+    layout();
+    return true;
+  }
+
+  // Display-engine tier: the hardware scales a DS-resolution canvas, so
+  // there is no renderer and no scaling here at all; the views are laid out
+  // on the canvas (the layout's natural size at scale 1) and draw() draws
+  // them into the layer's source.
+  if (disp_wanted_ && only_screen_ < 0 && DispOut::available()) {
+    auto d = std::make_unique<DispOut>();
+    d->set_grid(disp_grid_);
+    // The menu and the OSD want panel pixels; the layer they share with the
+    // grid is the only place on this chip to get them.
+    d->set_overlay(true);
+    d->set_nearest(!linear);
+    d->set_integer_scale(static_cast<int>(int_scale_));
+    if (d->open(rot, vsync)) {
+      disp_ = std::move(d);
+      layout();
+      if (chunky_) build_source_scale();
+      std::fprintf(stderr, "video: display-engine scaler (%s), rot %d, layout %s, %s driver, vsync %s%s%s\n",
+                   disp_->nearest() ? "nearest" : "driver filter", rot, mode_name(layout_.mode), SDL_GetCurrentVideoDriver(), vsync ? "on" : "off",
+                   !chunky_ ? "" : disp_->divisor() > 1 ? ", chunky in the scaler" : ", chunky at source",
+                   disp_->grid() ? ", grid layer" : disp_->overlay_available() ? ", overlay layer" : "");
+      return true;
+    }
   }
 
   const char* vd = SDL_GetCurrentVideoDriver();
@@ -310,7 +350,7 @@ bool Display::open_renderer(bool linear, bool vsync, int rot) {
 }
 
 void Display::close() {
-  sync();
+  hcge_.close();
   if (disp_) { disp_->close(); disp_.reset(); }
   gpu_.reset();   // flushes what it has in flight
   if (out_) { out_->close(); out_.reset(); }
@@ -462,8 +502,16 @@ void Display::draw_async(Display* const ds[], int n, const u32* const fb[SCREENS
 }
 
 void Display::draw(const u32* const fb[SCREENS]) {
-  sync();
-  if (gpu_) { draw_gpu(fb); return; }
+  if (hcge_) {
+    int screens[SCREENS], rects[SCREENS][4]; bool shown[SCREENS];
+    for (int i = 0; i < SCREENS; ++i) {
+      screens[i] = views_[i].screen; shown[i] = views_[i].shown;
+      rects[i][0] = views_[i].rect.x; rects[i][1] = views_[i].rect.y;
+      rects[i][2] = views_[i].rect.w; rects[i][3] = views_[i].rect.h;
+    }
+    hcge_.present(fb, screens, rects, shown, inset_alpha_, hcge_w_, hcge_h_);
+    return;
+  }
   if (disp_) {
     if (disp_->overlay_available()) { disp_->overlay_changed(canvas_taken_); canvas_taken_ = false; }
     const u32* slots[DispOut::VIEWS] = {nullptr, nullptr};
@@ -496,8 +544,7 @@ void Display::set_page(bool on) {
 }
 
 void Display::toggle_fullscreen() {
-  sync();
-  if (disp_) return;   // the panel is the window
+  if (disp_ || hcge_) return;   // the panel is the window
   fullscreen_ = !fullscreen_;
   SDL_SetWindowFullscreen(win_, fullscreen_ ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
   layout();
@@ -508,7 +555,13 @@ void Display::toggle_fullscreen() {
 void Display::set_layout(const Layout& l) {
   sync();
   if (only_screen_ >= 0) return;
-  if (disp_) { layout_ = l; layout(); if (chunky_) build_source_scale(); return; }
+  if (disp_ || hcge_) {
+    layout_ = l;
+    if (hcge_) natural_size(layout_, 1.0, hcge_w_, hcge_h_);
+    layout();
+    if (disp_ && chunky_) build_source_scale();
+    return;
+  }
   const Mode was = layout_.mode;
   layout_ = l;
   if (!fullscreen_ && was != l.mode) {
@@ -552,6 +605,7 @@ bool Display::map_point(int wx, int wy, int& screen, int& sx, int& sy) const {
 // ---- per-scanline scaling ---------------------------------------------------
 
 bool Display::out_size(int& w, int& h) const {
+  if (hcge_) { w = hcge_w_; h = hcge_h_; return true; }
   if (disp_) { w = disp_->logical_w(); h = disp_->logical_h(); return true; }
   if (ren_) return SDL_GetRendererOutputSize(ren_, &w, &h) == 0;
   if (!win_) return false;

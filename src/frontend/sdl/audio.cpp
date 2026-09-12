@@ -19,8 +19,9 @@ bool Audio::open(bool native_rate) {
     // accepts and converts any rate, so "allow a change" alone changes
     // nothing. 48 kHz is the daemon default before SDL 2.24's query exists.
     int freq = 48000;
-#if SDL_VERSION_ATLEAST(2, 24, 0)
-    // Only daemon backends implement the query; some ALSA backends crash in it.
+#if SDL_VERSION_ATLEAST(2, 24, 0) && !defined(DSPERATE_OLD_SDL)
+    // Only the daemon backends implement the query; SDL 2.30's ALSA backend
+    // crashes inside it (RG DS, 2026-09-04) rather than failing.
     const char* drv = SDL_GetCurrentAudioDriver();
     if (drv && (std::strcmp(drv, "pipewire") == 0 || std::strcmp(drv, "pulseaudio") == 0)) {
       SDL_AudioSpec def{};

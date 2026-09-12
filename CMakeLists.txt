@@ -126,7 +126,10 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 add_subdirectory(src/core)
-add_subdirectory(src/frontend/video)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "mips")
+  target_link_libraries(dsperate_core PUBLIC atomic)
+endif()
+# RetroAchievements.
 if(DSPERATE_CHEEVOS)
   add_subdirectory(src/cheevos)
 endif()

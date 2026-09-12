@@ -1423,28 +1423,19 @@ static int run(int argc, char** argv) {
       SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     } else std::fprintf(stderr, "%s: this SDL2 has no headless video driver; its own driver will also open the panel\n", tier);
   };
-  // Where frames go (frontend/video/select.h). The panel-owning sinks are
-  // decided here, before SDL_Init, since they point SDL at a headless driver.
-  {
-    ds::frontend::BootProbe probe;
-    probe.sink = cfg.str("video.sink");
-    probe.disp = cfg.str("video.disp");
-    probe.fbdev = cfg.str("video.fbdev");
-    probe.dual_window = dual_window;
-    if (const char* vd = std::getenv("SDL_VIDEODRIVER")) probe.sdl_videodriver = vd;
-    for (int i = 0; i < SDL_GetNumVideoDrivers(); ++i) if (!std::strcmp(SDL_GetVideoDriver(i), "mali")) probe.sdl_has_mali = true;
-    probe.display_env = std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY");
-    probe.has_dri = ::access("/dev/dri", F_OK) == 0;
-    probe.disp_ok = !dual_window && ds::sdl::DispOut::available();
-    probe.fb0_ok = !dual_window && ds::sdl::FbdevOut::available();
-    const ds::frontend::BootPlan plan = ds::frontend::plan_boot(probe);
-    for (const std::string& n : plan.notes) std::fprintf(stderr, "%s\n", n.c_str());
-    vs.panel_sink = plan.panel;
-    vs.want_sink = plan.want;
-    if (plan.unset_videodriver) unsetenv("SDL_VIDEODRIVER");
-    if (plan.headless_driver) go_headless(plan.panel == ds::frontend::Sink::Disp ? "video.sink disp" : "video.sink fbdev");
-  }
-  if (vs.panel_sink == ds::frontend::Sink::Disp && chunky != 0 && chunky != 2) {
+  if (std::getenv("DS_HCGE")) go_headless("HCGE");
+  const std::string disp_mode = cfg.str("video.disp");
+  const bool disp_auto = disp_mode.empty() || disp_mode == "auto";
+  bool& use_disp = vs.use_disp;
+  use_disp = disp_mode == "true" || disp_mode == "on";
+  if ((use_disp || disp_auto) && !dual_window) {
+    if (ds::sdl::DispOut::available()) { use_disp = true; go_headless("video.disp"); }
+    else if (use_disp) {
+      std::fprintf(stderr, "video.disp: /dev/disp not usable; using SDL\n");
+      use_disp = false;
+    }
+  } else use_disp = false;
+  if (use_disp && chunky != 0 && chunky != 2) {
     std::fprintf(stderr, "chunky %s: the display-engine tier draws chunky cells in the scaler as their mean; using mean\n", cfg.str("video.chunky").c_str());
     chunky = 2;
   }

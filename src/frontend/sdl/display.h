@@ -10,6 +10,7 @@
 #include "display_disp.h"
 #include "display_drm.h"  // complete types for the unique_ptr
 #include "display_fbdev.h"
+#include "display_hcge.h"
 #include "display_wl.h"
 
 #include <SDL2/SDL.h>
@@ -243,6 +244,9 @@ private:
   Sink              panel_ = Sink::Count, want_ = Sink::Count;
   Sink              sink_ = Sink::Count;
   u8                disp_grid_ = 0;
+  bool              fbdev_wanted_ = false;
+  HcgeOut           hcge_;
+  int               hcge_w_ = 0, hcge_h_ = 0;
   std::unique_ptr<DispOut> disp_;       // display-engine tier; null otherwise
   bool              chunky_ = false;
   double            grid_strength_ = 0.0;
