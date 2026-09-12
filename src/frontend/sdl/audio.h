@@ -21,7 +21,7 @@ public:
   bool open(bool native_rate = true);
   u32  rate() const { return rate_; }
   void close();
-  bool active() const { return dev_ != 0; }
+  bool active() const { return dev_ != 0 || stock_; }
 
   // Drains the SPU ring into the queue. With `drop`, whole frames are
   // discarded once the queue is at target depth (fast forward), or once it
@@ -100,6 +100,9 @@ private:
   static constexpr double DRC_CLAMP = 0.005;     // +/- 0.5 %
   static constexpr double DRC_SMOOTH = 1.0 / 32.0;   // depth EMA, ~0.5 s
   SDL_AudioDeviceID dev_ = 0, cap_ = 0;
+  void* stock_ = nullptr;
+  int (*stock_play_)(const void*, int) = nullptr;
+  void (*stock_close_)() = nullptr;
   std::vector<s16> mic_;
   u32 frame_bytes_ = 0;
   u32 dev_samples_ = 0;     // got.samples: the device's own period
