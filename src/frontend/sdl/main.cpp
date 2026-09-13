@@ -1132,7 +1132,11 @@ int main(int argc, char** argv) {
   u8& chunky = vs.chunky;
   const u32& chunky_thresh = vs.chunky_thresh;
   bool audio_on = cfg.flag("audio.enabled", true), mic_on = cfg.flag("audio.mic", true);
+#if DSPERATE_JIT_MIPS
+  const bool jit = std::getenv("DS_MIPS_JIT") && cfg.flag("emu.jit", true);
+#else
   const bool jit = cfg.flag("emu.jit", true);
+#endif
   const bool& dual_window = vs.dual_window;
   const long quantum = cfg.num("emu.quantum", 0);   // event-bound interleave (DraStic's rule): 5-10 % faster than lockstep
   using Disp = ds::sdl::Display;
