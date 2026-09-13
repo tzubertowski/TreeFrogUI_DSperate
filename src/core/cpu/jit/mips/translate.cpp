@@ -37,7 +37,9 @@ extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext* c, const ds::u32* 
       ds::u32 imm = 0;
       if ((x & 0x0E000000u) == 0x02000000u) imm = ds::rotr32(x & 255u, ((x >> 8) & 15u) * 2u);
       else {
-        const ds::u32 rm = x & 15u, sh = (x >> 7) & 31u, typ = (x >> 5) & 3u, v = c->hot.regs[rm];
+        const ds::u32 rm = x & 15u, sh = (x >> 7) & 31u, typ = (x >> 5) & 3u;
+        if (rm == 15 || rn == 15) goto slow;
+        const ds::u32 v = c->hot.regs[rm];
         if (!sh && typ != 0) { if (op == 13) goto slow; else goto slow; }
         imm = typ == 0 ? (v << sh) : typ == 1 ? (v >> sh) : typ == 2 ? static_cast<ds::u32>(static_cast<ds::s32>(v) >> sh) : ((v >> sh) | (v << (32 - sh)));
       }

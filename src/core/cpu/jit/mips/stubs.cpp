@@ -3,6 +3,7 @@
 #include "core/cpu/jit/mips/emit.h"
 #include "core/sched/scheduler.h"
 namespace ds { extern "C" SliceNext ds_slice_next(void*); }
+extern "C" const void* jit_h_lookup(ds::CpuContext*, ds::u32);
 namespace ds::jit::backend {
 using namespace ds::jit;
 extern "C" void ds_jit_mips_run_loop(void* scheduler) {
@@ -20,9 +21,12 @@ void emit_stubs(Runtime& rt) {
   rt.enter_light=e.cur(); rt.run_loop=&ds_jit_mips_run_loop; rt.exit_key=e.cur(); rt.exit_key_lit=nullptr;
   rt.exit_r15=nullptr; rt.call_pure=nullptr; rt.call_full=nullptr; rt.call2=nullptr; rt.poll=nullptr; rt.flush_exit=nullptr;
   rt.stubs_end=LUT_AREA+e.size(); rt.pos=rt.stubs_end;
-  for(auto& c:rt.cpus){c.dispatch=nullptr;c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;}
+  for(auto& c:rt.cpus){
+    c.dispatch=e.cur(); e.load_ptr(25, reinterpret_cast<const void*>(&jit_h_lookup)); e.jalr(31,25); e.nop(); e.jr(2); e.nop();
+    c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;
+  }
 }
-void write_entry_redirect(u8* entry,u32 key,const u8* dispatch){MipsEmitter e(entry,ENTRY_PATCH);e.lui(4,key>>16);e.ori(4,4,key);e.j(reinterpret_cast<uintptr_t>(dispatch));}
+void write_entry_redirect(u8* entry,u32 key,const u8* dispatch){MipsEmitter e(entry,ENTRY_PATCH);e.lui(5,key>>16);e.ori(5,5,key);e.j(reinterpret_cast<uintptr_t>(dispatch));}
 void patch_link(u8* site,const u8* target){MipsEmitter::patch(site,0x08000000u|((reinterpret_cast<uintptr_t>(target)>>2)&0x03ffffff));}
 u32 relative_branch_class(u32 w){return (w&0xfc000000u)==0x08000000u?1:0;}
 }
