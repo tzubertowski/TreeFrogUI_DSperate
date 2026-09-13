@@ -1397,7 +1397,11 @@ static int run(int argc, char** argv) {
   u8& chunky = vs.chunky;
   const u32& chunky_thresh = vs.chunky_thresh;
   bool audio_on = cfg.flag("audio.enabled", true), mic_on = cfg.flag("audio.mic", true);
+#if DSPERATE_JIT_MIPS
+  const bool jit = std::getenv("DS_MIPS_JIT") && cfg.flag("emu.jit", true);
+#else
   const bool jit = cfg.flag("emu.jit", true);
+#endif
   const bool& dual_window = vs.dual_window;
   using Disp = ds::sdl::Display;
   using Menu = ds::sdl::Menu;
