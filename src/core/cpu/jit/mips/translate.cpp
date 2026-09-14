@@ -44,7 +44,12 @@ static bool native(u32 x, N &n, bool shifts) {
   if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 12 &&
       n.op != 14 && n.op != 15)
     return false;
-  if (n.setflags)
+  // The emitted NZC update is exact for an immediate logical operation.  A
+  // shifted register operand needs its carry bit computed from guest data;
+  // arithmetic also needs V, so both stay in the fallback for now.
+  if (n.setflags &&
+      (a != AOp::DpImm ||
+       (n.op != 0 && n.op != 1 && n.op != 12 && n.op != 14)))
     return false;
   if (a == AOp::DpImm) {
     n.im = true;
@@ -80,8 +85,6 @@ static void getr(MipsEmitter &e, u32 d, u32 r) {
 static void putr(MipsEmitter &e, u32 r, u32 s) {
   e.sw(s, OR + 4 * r, R_CTX);
 }
-static void sync(MipsEmitter &) {}
-static void reload(MipsEmitter &) {}
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
   const u32 page = addr >> 12;
   for (u32 i = 0; i < b.ndep; ++i)
@@ -208,16 +211,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   if (is.empty())
     return false;
   MipsEmitter e(buf, cap);
-  e.addiu(R_SP, R_SP, use_native ? -64 : -24);
+  e.addiu(R_SP, R_SP, -24);
   e.sw(R_CTX, 16, R_SP);
   e.sw(R_RA, 20, R_SP);
-  if (use_native) {
-    for (u32 r = 0; r < 8; ++r)
-      e.sw(17 + r, 24 + 4 * r, R_SP);
-  }
   e.move(R_CTX, 4);
-  if (use_native)
-    reload(e);
   std::vector<B> bs;
   std::vector<size_t> ex;
   for (u32 q = 0; q < is.size();) {
@@ -255,8 +252,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
     }
-    if (use_native)
-      sync(e);
     x.ip = e.size();
     e.lui(5, 0);
     e.ori(5, 5, 0);
@@ -268,8 +263,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.load_ptr(25, reinterpret_cast<const void *>(&ds_jit_mips_fallback_block));
     e.jalr(R_RA, 25);
     e.nop();
-    if (use_native)
-      reload(e);
     x.br = e.bnez(2);
     e.nop();
     bs.push_back(std::move(x));
@@ -279,14 +272,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.patch_branch(p, done);
   for (B &x : bs)
     e.patch_branch(x.br, done);
-  if (use_native) {
-    sync(e);
-    for (u32 r = 0; r < 8; ++r)
-      e.lw(17 + r, 24 + 4 * r, R_SP);
-  }
   e.lw(R_CTX, 16, R_SP);
   e.lw(R_RA, 20, R_SP);
-  e.addiu(R_SP, R_SP, use_native ? 64 : 24);
+  e.addiu(R_SP, R_SP, 24);
   e.jr(R_RA);
   e.nop();
   for (B &x : bs) {

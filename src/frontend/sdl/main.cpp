@@ -989,12 +989,11 @@ const char* extra_default(const char* key, bool pad, const ds::sdl::Config& cfg)
 
 } // namespace
 
-namespace {
-// RESET on a game started from the game list: main() starts the process over.
-bool g_restart = false;
-}
-
-static int run(int argc, char** argv) {
+int main(int argc, char** argv) {
+  if (std::getenv("DS_LOG_FLUSH")) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+  }
   const char* rom = nullptr;
   const char* config_arg = nullptr;
   long frame_limit = 0;
