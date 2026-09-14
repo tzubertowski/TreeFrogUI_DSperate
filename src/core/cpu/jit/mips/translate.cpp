@@ -42,7 +42,7 @@ static bool native(u32 x, N &n, bool shifts) {
   if (n.rd == 15 || n.rn == 15 || n.rm == 15)
     return false;
   if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 12 &&
-      n.op != 13 && n.op != 14 && n.op != 15)
+      n.op != 14 && n.op != 15)
     return false;
   if (n.setflags)
     return false;
@@ -176,7 +176,8 @@ namespace ds::jit::backend {
 bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      u32 &size) {
   const u32 start = key_pc(key);
-  if (key_thumb(key) || !jc.ctx->page_table.read_ptr(start) || cap < 128)
+  const bool thumb = key_thumb(key);
+  if (!jc.ctx->page_table.read_ptr(start) || cap < 128)
     return false;
   const bool arm9 = jc.ctx->which == ds::Cpu::ARM9;
   const char *native_env = std::getenv("DS_MIPS_NATIVE");
@@ -191,13 +192,16 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     u8 *p = jc.ctx->page_table.read_ptr(addr);
     if (!p)
       break;
-    u32 x;
-    std::memcpy(&x, p, 4);
-    const bool br =
-        (x & 0x0e000000u) == 0x0a000000u || (x & 0x0ffffff0u) == 0x012fff10u;
+    u32 x = 0;
+    if (thumb)
+      std::memcpy(&x, p, 2);
+    else
+      std::memcpy(&x, p, 4);
+    const bool br = !thumb &&
+        ((x & 0x0e000000u) == 0x0a000000u || (x & 0x0ffffff0u) == 0x012fff10u);
     is.push_back(x);
-    ks.push_back(make_key(addr, false));
-    addr += 4;
+    ks.push_back(make_key(addr, thumb));
+    addr += thumb ? 2 : 4;
     if (br)
       break;
   }
