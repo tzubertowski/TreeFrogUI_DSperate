@@ -1458,11 +1458,11 @@ static int run(int argc, char** argv) {
   const std::string audio_driver = cfg.str("audio.driver", "pipewire");
   const bool driver_forced = std::getenv("SDL_AUDIODRIVER") != nullptr;
   if ((init & SDL_INIT_AUDIO) && !driver_forced && !audio_driver.empty()) setenv("SDL_AUDIODRIVER", audio_driver.c_str(), 1);
-#ifdef SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS
-  // Pad a/b/x/y are positions (south/east/west/north) everywhere: bindings
-  // and the menu's pips assume it. SDL2 otherwise uses labels on Nintendo pads.
-  SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
-#endif
+  if (std::getenv("DS_HCGE_DIAG")) {
+    std::fprintf(stderr, "startup: SDL_Init begin flags=%08x video=%s jit=%d\n", init,
+                 std::getenv("SDL_VIDEODRIVER") ? std::getenv("SDL_VIDEODRIVER") : "auto", jit);
+    std::fflush(stderr);
+  }
   if (SDL_Init(init) != 0) {
     if ((init & SDL_INIT_AUDIO) && !driver_forced && !audio_driver.empty()) {
       unsetenv("SDL_AUDIODRIVER");
@@ -1473,6 +1473,10 @@ static int run(int argc, char** argv) {
     audio_on = mic_on = false;   // no audio subsystem: run silent
   }
 sdl_ready:
+  if (std::getenv("DS_HCGE_DIAG")) {
+    std::fprintf(stderr, "startup: SDL_Init complete; opening displays\n");
+    std::fflush(stderr);
+  }
 
   ds::sdl::Display display;
   ds::sdl::Display display2;   // dual-window: the lower panel's window

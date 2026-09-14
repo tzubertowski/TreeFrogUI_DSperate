@@ -156,6 +156,9 @@ private:
 
   void set(io::Io::Button b, bool down) {
     if (down) { buttons_ |= 1u << b; pressed_ |= 1u << b; } else buttons_ &= ~(1u << b);
+    if (down && (buttons_ & ((1u << io::Io::BTN_SELECT) | (1u << io::Io::BTN_START))) ==
+                    ((1u << io::Io::BTN_SELECT) | (1u << io::Io::BTN_START)))
+      quit_ = true;
   }
   void touch_at(int wx, int wy, Display& display);
   Panel touch_panel(SDL_TouchID id);   // DS_DUAL_SCREENS route for a device, cached on first sight

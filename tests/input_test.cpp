@@ -65,6 +65,7 @@ struct InputTestAccess {
   static u32 fb_pressed(const Input& in) { return in.menu_fb_pressed_; }
   static u32 fb_held(const Input& in) { return in.menu_fb_held_; }
   static bool quit(const Input& in) { return in.quit_; }
+  static bool key(Input& in, SDL_Keycode k, bool down) { return in.key_down(k, down); }
 };
 
 namespace {
@@ -128,6 +129,14 @@ void test_escape_cancels_once_quit_moves() {
   T::tap_key(in, SDLK_ESCAPE);
   CHECK(in.take_menu_presses() == kB);
   CHECK(!T::quit(in));
+}
+
+void test_select_start_always_quits() {
+  Rig r; Input& in = r.set("keys.select", "F11").set("keys.start", "F12").go();
+  CHECK(T::key(in, SDLK_F11, true));
+  CHECK(!T::quit(in));
+  CHECK(T::key(in, SDLK_F12, true));
+  CHECK(T::quit(in));
 }
 
 // Rebinding the pad column used to be a one-way door: a key event fell past
@@ -572,6 +581,7 @@ int main() {
   ds::sdl::test_fallback_press_does_not_outlive_the_frame();
   ds::sdl::test_escape_is_still_quit();
   ds::sdl::test_escape_cancels_once_quit_moves();
+  ds::sdl::test_select_start_always_quits();
   ds::sdl::test_pad_capture_swallows_keys_and_escape_cancels();
   ds::sdl::test_capture_composes_a_chord_with_the_modifier();
   ds::sdl::test_reachable_counts_every_way_in();

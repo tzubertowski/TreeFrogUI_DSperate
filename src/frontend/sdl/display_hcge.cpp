@@ -97,7 +97,7 @@ void HcgeOut::present(const u32* const fb[2], const int screen[2], const int rec
   }
   const int driver_rc = present_(dst.data(), out_w, out_h, out_w * static_cast<int>(sizeof(u16)));
   if (std::getenv("DS_HCGE_DIAG") && driver_rc <= 0) {
-    std::fprintf(stderr, "hcge: driver rejected frame rc=%d\n", driver_rc);
+    std::fprintf(stderr, "hcge: present returned rc=%d\n", driver_rc);
     std::fflush(stderr);
   }
 }

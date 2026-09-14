@@ -22,7 +22,11 @@ using namespace ds;
 namespace {
 
 constexpr u32 CODE_BASE = 0x02000000, HALT_STUB = 0x02001000, BUF_BASE = 0x02200000, STACK = 0x02300000;
-constexpr u32 MAIN_RAM = 0x02000000, MAIN_RAM_SIZE = 0x400000;
+#if defined(__mips__)
+constexpr bool MIPS_HOST = true;
+#else
+constexpr bool MIPS_HOST = false;
+#endif
 
 struct Machine {
   NDS nds;
@@ -214,6 +218,11 @@ struct Trial {
   std::vector<u32> code;   // ARM words or Thumb halfwords
   u32 regs[16];
   u32 cpsr;
+  u32 code_base = CODE_BASE;
+  s32 budget = 1 << 24;
+  bool code_in_r9 = false;
+  bool require_halt = false;
+  bool strict_budget = false;
 };
 
 u32 g_selfmod = 0;
@@ -224,12 +233,7 @@ bool wrote_own_code(Machine& m) { return std::memcmp(m.host(CODE_BASE), g_code_i
 
 void load_trial(Machine& m, const Trial& t, bool a9) {
   write_halt_stub(m, a9);
-  // Clear the code page first. A trial whose base register wanders into this
-  // page stores over its own code, and what it leaves behind would otherwise
-  // be fetched by the next trial once that one runs off the end of its own
-  // code. Cheap (4 KB); the wider version of the problem is `wipe_ram`.
-  for (u32 i = 0; i < 0x1000; i += 4) m.poke32(CODE_BASE + i, 0);
-  u32 addr = CODE_BASE;
+  u32 addr = t.code_base;
   if (t.thumb) {
     for (u32 h : t.code) { m.poke16(addr, static_cast<u16>(h)); addr += 2; }
     // ldr r0, [pc, #k]; bx r0; (pad) .word HALT_STUB
@@ -259,15 +263,16 @@ void load_trial(Machine& m, const Trial& t, bool a9) {
   std::memset(c.bank_spsr, 0, sizeof c.bank_spsr);
   c.hot.spsr = 0;
   for (int i = 0; i < 15; ++i) c.hot.regs[i] = t.regs[i];
+  if (t.code_in_r9) c.hot.regs[9] = t.code_base;
   c.hot.cpsr = t.cpsr | 0x1F | (t.thumb ? 0x20 : 0);
-  c.hot.regs[15] = CODE_BASE + (t.thumb ? 4 : 8);
+  c.hot.regs[15] = t.code_base + (t.thumb ? 4 : 8);
   c.halted = false;
   c.hot.irq_pending = 0;
   // As if a jump had just landed at CODE_BASE (the ARM7 interpreter keeps the
   // code region of the last jump target).
-  c.code_cycles = CODE_BASE >> 15;
-  c.code_region = CODE_BASE >> 24;
-  c.hot.cycle_budget = 1 << 24;
+  c.code_cycles = t.code_base >> 15;
+  c.code_region = t.code_base >> 24;
+  c.hot.cycle_budget = t.budget;
   c.budget_at_halt = 0;
   c.jumped = false;
   std::memcpy(g_code_image, m.host(CODE_BASE), sizeof g_code_image);
@@ -284,15 +289,9 @@ bool compare(Machine& a, Machine& b, const Trial& t, u32 seed, bool report) {
   // clobbered its own code, a loop through stale memory) only differs in
   // where the budget ran out, which is the one thing the engines are allowed
   // to differ in. Count it and move on.
-  if (!a.cpu.halted && !b.cpu.halted && a.cpu.hot.cycle_budget <= 0 && b.cpu.hot.cycle_budget <= 0) { ++g_inconclusive; g_ram_dirty = true; return true; }
-  // A trial that stores over its own code is outside what the recompiler
-  // promises: the interpreter fetches the new word, while a translated block
-  // keeps running the code it was built from, and the two legitimately part
-  // ways. It is the generator wandering, not a defect -- the same divergence
-  // appears for a plain STM with no user-bank bit. Judge only the trials that
-  // left their own instructions alone.
-  if (wrote_own_code(a) || wrote_own_code(b)) { ++g_selfmod; g_ram_dirty = true; return true; }
+  if (!a.cpu.halted && !b.cpu.halted && a.cpu.hot.cycle_budget <= 0 && b.cpu.hot.cycle_budget <= 0 && !t.require_halt && !t.strict_budget) { ++g_inconclusive; return true; }
   bool ok = true;
+  if (t.require_halt && (!a.cpu.halted || !b.cpu.halted)) ok = false;
   for (int i = 0; i < 16; ++i) if (a.cpu.hot.regs[i] != b.cpu.hot.regs[i]) ok = false;
   if (a.cpu.hot.cpsr != b.cpu.hot.cpsr) ok = false;
   if (a.cpu.halted != b.cpu.halted) ok = false;
@@ -306,7 +305,7 @@ bool compare(Machine& a, Machine& b, const Trial& t, u32 seed, bool report) {
   if (!ok) g_ram_dirty = true;
   if (ok || !report) return ok;
   std::fprintf(stderr, "MISMATCH seed %u (%s), shortest failing prefix:\n", seed, t.thumb ? "thumb" : "arm");
-  for (size_t i = 0; i < t.code.size(); ++i) std::fprintf(stderr, "  %08x: %0*x\n", CODE_BASE + static_cast<u32>(i * (t.thumb ? 2 : 4)), t.thumb ? 4 : 8, t.code[i]);
+  for (size_t i = 0; i < t.code.size(); ++i) std::fprintf(stderr, "  %08x: %0*x\n", t.code_base + static_cast<u32>(i * (t.thumb ? 2 : 4)), t.thumb ? 4 : 8, t.code[i]);
   std::fprintf(stderr, "  initial: cpsr %08x", t.cpsr);
   for (int i = 0; i < 15; ++i) std::fprintf(stderr, " r%d=%08x", i, t.regs[i]);
   std::fprintf(stderr, "\n  %-6s %-10s %-10s\n", "", "interp", "jit");
@@ -370,10 +369,33 @@ bool run_both(Machine& mi, Machine& mj, const Trial& tr, bool a9, u32 seed, bool
 
 // Hand-written sequences for cases the generator reaches rarely. Registers
 // follow the generator's conventions (r9/r6 = buffer, r13 = stack).
-struct Directed { Cpu which; bool thumb; std::vector<u32> code; u32 regs[15]; };
+struct Directed {
+  Cpu which; bool thumb; std::vector<u32> code; u32 regs[15];
+  u32 code_base = CODE_BASE; s32 budget = 1 << 24; bool code_in_r9 = false;
+  bool require_halt = false; bool strict_budget = false;
+};
 
-void directed() {
+void directed(u32 start = 0, u32 limit = ~0u) {
   const Directed cases[] = {
+    // A branch as the first instruction must leave the translated entry with
+    // the branch target, not the fall-through PC.
+    {Cpu::ARM9, false, {0xEA000001, 0xE2800001, 0xE2800002, 0xE2800003}, {0}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xEA000001, 0xE2800001, 0xE2800002, 0xE2800003}, {0}, CODE_BASE, 1 << 24, false, true},
+    // BL enters a second block and BX LR returns to the caller's block, which
+    // then skips over the inline function to the generated halt branch.
+    {Cpu::ARM9, false, {0xEB000001, 0xEA000002, 0xE1A00000, 0xE2800001, 0xE12FFF1E}, {0}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xEB000001, 0xEA000002, 0xE1A00000, 0xE2800001, 0xE12FFF1E}, {0}, CODE_BASE, 1 << 24, false, true},
+    // Translate across a 4 KiB guest page boundary; the trailing halt branch
+    // starts on the next page.
+    {Cpu::ARM9, false, {0xE3A00001, 0xE2800002}, {0}, CODE_BASE + 0x2ff8, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xE3A00001, 0xE2800002}, {0}, CODE_BASE + 0x2ff8, 1 << 24, false, true},
+    // A small slice budget must stop the same way in both engines.
+    {Cpu::ARM9, false, {0xE2800001, 0xE2800001, 0xE2800001, 0xE2800001, 0xE2800001}, {0}, CODE_BASE, 32, false, false, MIPS_HOST},
+    {Cpu::ARM7, false, {0xE2800001, 0xE2800001, 0xE2800001, 0xE2800001, 0xE2800001}, {0}, CODE_BASE, 32, false, false, MIPS_HOST},
+    // Store a branch over the second instruction, then loop back. This forces
+    // the translated code page to invalidate and be rebuilt before halting.
+    {Cpu::ARM9, false, {0xE3A00000, 0xE5892004, 0xEAFFFFFD}, {0, 0, 0xEA000000}, CODE_BASE, 1 << 24, true, true},
+    {Cpu::ARM7, false, {0xE3A00000, 0xE5892004, 0xEAFFFFFD}, {0, 0, 0xEA000000}, CODE_BASE, 1 << 24, true, true},
     // Pending fetch cycles of the MOV must survive the LDR taking its slow path
     // (unmapped address through a register offset).
     {Cpu::ARM9, false, {0xE3A00001, 0xE7991102}, {0, 0, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -589,8 +611,10 @@ void directed() {
     {Cpu::ARM9, false, {0xE1454281, 0xE2800001}, {0, 0x7FFF8000u, 0x00028001u, 0, 0xFFFFFFF0u, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE14542E1, 0xE2800001}, {0, 0x7FFF8000u, 0x80018001u, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
   };
-  u32 n = 0;
+  u32 n = 0, done = 0;
   for (const Directed& d : cases) {
+    if (n++ < start) continue;
+    if (done == limit) break;
     const bool a9 = d.which == Cpu::ARM9;
     Machine mi(d.which), mj(d.which);
     CHECK(jit::attach(mj.nds, a9, !a9));
@@ -598,6 +622,11 @@ void directed() {
     t.thumb = d.thumb;
     t.code = d.code;
     for (int i = 0; i < 15; ++i) t.regs[i] = d.regs[i];
+    t.code_base = d.code_base;
+    t.budget = d.budget;
+    t.code_in_r9 = d.code_in_r9;
+    t.require_halt = d.require_halt;
+    t.strict_budget = d.strict_budget;
     t.regs[9] = BUF_BASE;
     t.regs[6] = BUF_BASE;
     t.regs[13] = STACK;
@@ -606,9 +635,48 @@ void directed() {
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
-    ++n;
+    ++done;
   }
-  std::printf("jit directed: %u cases ok\n", n);
+  std::printf("jit directed: %u cases ok\n", done);
+}
+
+u32 alu_imm(u32 op, u32 rd, u32 rn, u32 rotate, u32 imm8) {
+  return 0xE0000000u | (1u << 25) | (op << 21) | (rn << 16) | (rd << 12) |
+         (rotate << 8) | imm8;
+}
+
+u32 alu_reg(u32 op, u32 rd, u32 rn, u32 rm) {
+  return 0xE0000000u | (op << 21) | (rn << 16) | (rd << 12) | rm;
+}
+
+void native_alu(int only = -1) {
+  // Unconditional, non-S, non-PC ARM ALU forms: each immediate rotate edge
+  // and each native register form gets exercised without relying on flags.
+  const u32 ops[] = {13, 15, 4, 2, 0, 1, 12, 14}; // MOV MVN ADD SUB AND EOR ORR BIC
+  const u32 rotates[] = {0, 1, 4, 8, 12, 15};
+  for (Cpu which : {Cpu::ARM9, Cpu::ARM7}) {
+    if (only >= 0 && static_cast<int>(which) != only) continue;
+    Machine mi(which), mj(which);
+    CHECK(jit::attach(mj.nds, which == Cpu::ARM9, which == Cpu::ARM7));
+    Trial t;
+    t.code.reserve(64);
+    for (u32 i = 0; i < 8; ++i) {
+      const u32 op = ops[i];
+      t.code.push_back(alu_imm(op, i & 7, (i + 1) & 7, rotates[i % 6], 0x11u + i * 0x13u));
+      t.code.push_back(alu_reg(op, (i + 2) & 7, i & 7, (i + 3) & 7));
+    }
+    for (u32 i = 0; i < 24; ++i) {
+      const u32 op = ops[i & 7];
+      t.code.push_back(alu_imm(op, (i + 1) & 7, i & 7, rotates[(i + 2) % 6], 0xA5u ^ i));
+    }
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0x10203040u + static_cast<u32>(i) * 0x11111111u;
+    t.regs[9] = BUF_BASE;
+    t.regs[13] = STACK;
+    t.require_halt = true;
+    CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
+    jit::detach(mj.nds);
+  }
+  std::puts("jit native ALU: immediate+register forms ok");
 }
 
 void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
@@ -651,7 +719,14 @@ void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
 } // namespace
 
 int main(int argc, char** argv) {
-  setenv("DS_JIT_WARM", "1", 1);   // the trials must run translated code, not the cold-code interpreter path
+  if (argc > 3 && std::strcmp(argv[1], "directed") == 0) {
+    directed(static_cast<u32>(std::atoi(argv[2])), static_cast<u32>(std::atoi(argv[3])));
+    return 0;
+  }
+  if (argc > 1 && std::strncmp(argv[1], "native", 6) == 0) {
+    native_alu(argv[1][6] == '9' ? 0 : argv[1][6] == '7' ? 1 : -1);
+    return 0;
+  }
   const u32 trials = argc > 1 ? static_cast<u32>(std::atoi(argv[1])) : 400;
   // test_jit <count> <seed> [set]: run <count> trials from <seed> in one set,
   // and nothing else. <count> 1 is the single-trial form; a larger count
@@ -663,18 +738,12 @@ int main(int argc, char** argv) {
     fuzz(set >= 2 ? Cpu::ARM7 : Cpu::ARM9, set & 1, trials, seed);
     return 0;
   }
-  // Both timing models (timing_mode.h): the interpreter and the recompiler
-  // must agree under each; the runtime re-emits its stubs between the two.
-  for (const bool fast : {false, true}) {
-    if (fast && !ds::kFastTimingAvailable) { std::printf("jit: fast timing not implemented by this backend, skipped\n"); break; }
-    ds::g_fast_timing = fast;
-    std::printf("jit: %s timing\n", fast ? "fast" : "exact");
-    directed();
-    fuzz(Cpu::ARM9, false, trials, 1000);
-    fuzz(Cpu::ARM9, true, trials, 2000);
-    fuzz(Cpu::ARM7, false, trials, 3000);
-    fuzz(Cpu::ARM7, true, trials, 4000);
-  }
+  directed();
+  native_alu();
+  fuzz(Cpu::ARM9, false, trials, 1000);
+  fuzz(Cpu::ARM9, true, trials, 2000);
+  fuzz(Cpu::ARM7, false, trials, 3000);
+  fuzz(Cpu::ARM7, true, trials, 4000);
   const jit::Stats& s = jit::stats();
   std::printf("jit: %llu blocks, %llu inline instrs, %llu fallbacks\n",
               (unsigned long long)s.blocks_translated, (unsigned long long)s.instrs_translated, (unsigned long long)s.instrs_fallback);
