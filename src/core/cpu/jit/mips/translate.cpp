@@ -44,12 +44,8 @@ static bool native(u32 x, N &n, bool shifts) {
   if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 12 &&
       n.op != 14 && n.op != 15)
     return false;
-  // The emitted NZC update is exact for an immediate logical operation.  A
-  // shifted register operand needs its carry bit computed from guest data;
-  // arithmetic also needs V, so both stay in the fallback for now.
-  if (n.setflags &&
-      (a != AOp::DpImm ||
-       (n.op != 0 && n.op != 1 && n.op != 12 && n.op != 14)))
+  // Keep CPSR updates in the interpreter until the hardware path is proven.
+  if (n.setflags)
     return false;
   if (a == AOp::DpImm) {
     n.im = true;
