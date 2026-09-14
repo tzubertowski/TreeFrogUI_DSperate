@@ -168,4 +168,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dsperate-*-linux-aarch64.tar.gz dsperate-*-linux-aarch64-static.tar.gz dsperate-*-linux-armhf.tar.gz dsperate-*-linux-armhf-static.tar.gz --title "DSperate ${GITHUB_REF_NAME}" --notes-file notes.md
+        run: |
+          prerelease=()
+          [[ "${GITHUB_REF_NAME}" == *-* ]] && prerelease+=(--prerelease)
+          gh release create "${GITHUB_REF_NAME}" "${prerelease[@]}" dsperate-*-linux-aarch64.tar.gz dsperate-*-linux-aarch64-static.tar.gz dsperate-*-linux-armhf.tar.gz dsperate-*-linux-armhf-static.tar.gz --title "DSperate ${GITHUB_REF_NAME}" --notes-file notes.md

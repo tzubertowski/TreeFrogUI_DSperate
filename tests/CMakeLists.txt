@@ -31,6 +31,10 @@ if(DSPERATE_JIT)
   add_executable(test_jit jit_test.cpp)
   target_link_libraries(test_jit PRIVATE dsperate_core)
   add_test(NAME jit COMMAND test_jit)
+  set_tests_properties(jit PROPERTIES TIMEOUT 120)
+
+  add_executable(test_jit_alu_bench jit_alu_bench.cpp)
+  target_link_libraries(test_jit_alu_bench PRIVATE dsperate_core)
 endif()
 
 add_executable(test_spu spu_test.cpp)

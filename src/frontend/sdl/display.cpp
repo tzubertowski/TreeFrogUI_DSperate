@@ -192,6 +192,10 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
     if ((r == 90 || r == 270) && !disp_wanted_ && !fbdev_wanted_) std::swap(w, h);
   }
   const u32 flags = static_cast<u32>(SDL_WINDOW_RESIZABLE) | (fullscreen ? static_cast<u32>(SDL_WINDOW_FULLSCREEN_DESKTOP) : 0u);
+  if (std::getenv("DS_HCGE_DIAG")) {
+    std::fprintf(stderr, "startup: SDL_CreateWindow begin %dx%d\n", w, h);
+    std::fflush(stderr);
+  }
   win_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), w, h, flags);
   if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return false; }
   fullscreen_ = fullscreen;

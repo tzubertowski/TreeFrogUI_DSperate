@@ -1,56 +1,313 @@
+#include "core/cpu/arm_decode.h"
 #include "core/cpu/jit/jit_internal.h"
 #include "core/cpu/jit/mips/emit.h"
-#include "core/cpu/cpu_cycles.h"
-#include "core/cpu/interp/interp_internal.h"
+#include "core/mem/timing.h"
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
-extern "C" ds::u32 ds_jit_mips_fallback(ds::CpuContext*, ds::u32, ds::u32);
-extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext*, const ds::u32*, const ds::u32*, ds::u32);
-namespace ds::jit::backend {
-bool translate_block(JitCpu& jc, u32 key, u8* buf, size_t cap, Block& b, u32& size) {
-  const u32 start = key_pc(key), step = key_thumb(key) ? 2 : 4; u8* host = jc.ctx->page_table.read_ptr(start); if (!host || cap < 64) return false;
-  MipsEmitter e(buf, cap); e.addiu(29, 29, -8); e.sw(31, 4, 29); std::vector<u32> instrs, keys; u32 count = 0, addr = start;
-  for (; count < 32; ++count, addr += step) {
-    u8* p = jc.ctx->page_table.read_ptr(addr); if (!p) break; u32 instr = 0; std::memcpy(&instr, p, step);
-    instrs.push_back(instr); keys.push_back(make_key(addr, key_thumb(key)));
-    const bool arm_branch = !key_thumb(key) && (((instr & 0x0e000000u) == 0x0a000000u) || ((instr & 0x0ffffff0u) == 0x012fff10u));
-    const bool thumb_branch = key_thumb(key) && (((instr & 0xf000u) == 0xd000u) || ((instr & 0xf800u) == 0xe000u));
-    if (arm_branch || thumb_branch) break;
+
+extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext *, const ds::u32 *,
+                                              const ds::u32 *, ds::u32);
+namespace {
+using ds::CpuContext;
+using ds::s32;
+using ds::u32;
+using ds::arm::AOp;
+using ds::jit::MipsEmitter;
+constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, T0 = 8, T1 = 9, T2 = 10;
+constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
+struct N {
+  u32 op, rd, rn, rm, imm, shift, cond;
+  bool im, setflags, carry_valid, carry;
+  ds::u8 shift_type;
+};
+static u32 ai(u32 x) {
+  u32 v = x & 255, n = ((x >> 8) & 15) * 2;
+  return n ? (v >> n) | (v << (32 - n)) : v;
+}
+static bool native(u32 x, N &n, bool shifts) {
+  AOp a = ds::arm::decode_arm(x);
+  n.cond = x >> 28;
+  if (n.cond != 14 || (a != AOp::DpImm && a != AOp::DpImmShift))
+    return false;
+  n.op = (x >> 21) & 15;
+  const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
+  if (op_env && n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
+    return false;
+  n.rd = (x >> 12) & 15;
+  n.rn = (x >> 16) & 15;
+  n.rm = x & 15;
+  n.setflags = x & (1u << 20);
+  if (n.rd == 15 || n.rn == 15 || n.rm == 15)
+    return false;
+  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 12 &&
+      n.op != 13 && n.op != 14 && n.op != 15)
+    return false;
+  if (n.setflags)
+    return false;
+  if (a == AOp::DpImm) {
+    n.im = true;
+    n.imm = ai(x);
+    n.carry_valid = ((x >> 8) & 15) != 0;
+    n.carry = n.imm >> 31;
+    return true;
   }
-  if (!count) return false;
-  const size_t ip = e.size(); e.lui(5, 0); e.ori(5, 5, 0); const size_t kp = e.size(); e.lui(6, 0); e.ori(6, 6, 0);
-  e.addiu(7, 0, static_cast<s32>(count)); e.load_ptr(25, reinterpret_cast<const void*>(&ds_jit_mips_fallback_block)); e.jalr(31, 25); e.nop();
-  e.lw(31, 4, 29); e.addiu(29, 29, 8); e.jr(31); e.nop();
-  while (e.size() & 3) e.nop(); const size_t idata = e.size(); for (u32 v : instrs) e.w(v); const size_t kdata = e.size(); for (u32 v : keys) e.w(v);
-  e.patch_ptr(ip, 5, buf + idata); e.patch_ptr(kp, 6, buf + kdata); size = static_cast<u32>(e.size()); const u32 len = addr - start;
-  b.guest_len = len; b.hot_size = size; b.npages = 1; b.nsucc = 0; b.dead = false;
-  b.host_pages[0] = reinterpret_cast<const u8*>(reinterpret_cast<uintptr_t>(host) & ~uintptr_t{4095}); b.host_lo = host; b.host_hi = host + len - 1; return true;
+  if ((x & 0x10) || (!shifts && ((x >> 4) & 255)))
+    return false;
+  n.im = false;
+  n.shift = (x >> 7) & 31;
+  n.shift_type = (x >> 5) & 3;
+  return n.shift_type == 0 ||
+         (n.shift && (n.shift_type == 1 || n.shift_type == 2));
 }
+static void li(MipsEmitter &e, u32 r, u32 v) {
+  e.lui(r, v >> 16);
+  e.ori(r, r, v);
 }
-extern "C" ds::u32 ds_jit_mips_fallback(ds::CpuContext* c, ds::u32 instr, ds::u32 key) { return ds::jit::jit_h_fallback(c, instr, key); }
-extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext* c, const ds::u32* ins, const ds::u32* keys, ds::u32 n) {
-  for (ds::u32 i = 0; i < n; ++i) {
-    const ds::u32 x = ins[i];
-    const bool fast = ((x >> 28) == 0xE) && !(x & (1u << 20)) && (((x >> 12) & 15) != 15) && ((((x & 0x0E000000u) == 0x02000000u)) || ((x & 0x0E000010u) == 0));
-    if (fast) {
-      const ds::u32 op = (x >> 21) & 15, rn = (x >> 16) & 15, rd = (x >> 12) & 15;
-      if ((x & 0x0E000000u) == 0x02000000u && rn == 15 && op != 13) goto slow;
-      ds::u32 imm = 0;
-      if ((x & 0x0E000000u) == 0x02000000u) imm = ds::rotr32(x & 255u, ((x >> 8) & 15u) * 2u);
-      else {
-        const ds::u32 rm = x & 15u, sh = (x >> 7) & 31u, typ = (x >> 5) & 3u;
-        if (rm == 15 || rn == 15) goto slow;
-        const ds::u32 v = c->hot.regs[rm];
-        if (!sh && typ != 0) { if (op == 13) goto slow; else goto slow; }
-        imm = typ == 0 ? (v << sh) : typ == 1 ? (v >> sh) : typ == 2 ? static_cast<ds::u32>(static_cast<ds::s32>(v) >> sh) : ((v >> sh) | (v << (32 - sh)));
-      }
-      c->hot.regs[15] = ds::jit::key_r15(keys[i]);
-      const ds::u32 a = c->hot.regs[rn]; ds::u32 v = 0;
-      switch (op) { case 0: v = a & imm; break; case 1: v = a ^ imm; break; case 2: v = a - imm; break; case 4: v = a + imm; break; case 12: v = a | imm; break; case 13: v = imm; break; default: goto slow; }
-      c->hot.regs[rd] = v; ds::charge_C(*c); c->hot.regs[15] += 4; continue;
+static void emit_arm9_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
+  const ds::u8 t = c.timing9[(pc + 8) >> 12][0];
+  const u32 cost = t == 255 ? (!((pc + 8) & 31u) ? 3 : 1) : t;
+  li(e, T0, pc + 8);
+  e.sw(T0, OR + 60, R_CTX);
+  e.lw(T0, OB, R_CTX);
+  e.addiu(T0, T0, -static_cast<s32>(cost));
+  e.sw(T0, OB, R_CTX);
+}
+static void getr(MipsEmitter &e, u32 d, u32 r) {
+  e.lw(d, OR + 4 * r, R_CTX);
+}
+static void putr(MipsEmitter &e, u32 r, u32 s) {
+  e.sw(s, OR + 4 * r, R_CTX);
+}
+static void sync(MipsEmitter &) {}
+static void reload(MipsEmitter &) {}
+static void note_code_dep(ds::jit::Block &b, u32 addr) {
+  const u32 page = addr >> 12;
+  for (u32 i = 0; i < b.ndep; ++i)
+    if (b.dep_page[i] == page) {
+      b.dep_kind[i] |= ds::mem::Timing::RETIME_CODE;
+      return;
     }
-slow: if (ds::jit::jit_h_fallback(c, ins[i], keys[i])) return 1;
-next:;
+  if (b.ndep < ds::jit::Block::DEP_MAX) {
+    b.dep_page[b.ndep] = page;
+    b.dep_kind[b.ndep++] = ds::mem::Timing::RETIME_CODE;
+  } else
+    b.dep_overflow = true;
+}
+static void emit_n(MipsEmitter &e, const N &n) {
+  getr(e, T0, n.rn);
+  if (n.im)
+    li(e, T1, n.imm);
+  else {
+    getr(e, T1, n.rm);
+    if (n.shift) {
+      if (n.shift_type == 1)
+        e.srl(T1, T1, n.shift);
+      else if (n.shift_type == 2)
+        e.sra(T1, T1, n.shift);
+      else
+        e.sll(T1, T1, n.shift);
+    }
+  }
+  switch (n.op) {
+  case 0:
+    e.and_(T2, T0, T1);
+    break;
+  case 1:
+    e.xor_(T2, T0, T1);
+    break;
+  case 2:
+    e.subu(T2, T0, T1);
+    break;
+  case 4:
+    e.addu(T2, T0, T1);
+    break;
+  case 12:
+    e.or_(T2, T0, T1);
+    break;
+  case 13:
+    e.move(T2, T1);
+    break;
+  case 14:
+    e.nor(T1, T1, 0);
+    e.and_(T2, T0, T1);
+    break;
+  default:
+    e.nor(T2, T1, 0);
+  }
+  if (n.setflags) {
+    e.lw(T1, ds::jit::OFF_CPSR, R_CTX);
+    li(e, T0, n.carry_valid ? 0x1fffffffu : 0x3fffffffu);
+    e.and_(T1, T1, T0);
+    e.srl(T0, T2, 31);
+    e.sll(T0, T0, 31);
+    e.or_(T1, T1, T0);
+    size_t nz = e.bnez(T2);
+    e.nop();
+    li(e, T0, 0x40000000u);
+    e.or_(T1, T1, T0);
+    e.patch_branch(nz, e.size());
+    if (n.carry_valid && n.carry) {
+      li(e, T0, 0x20000000u);
+      e.or_(T1, T1, T0);
+    }
+    e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
+  }
+  putr(e, n.rd, T2);
+}
+struct B {
+  size_t ip, kp, br;
+  std::vector<u32> i, k;
+};
+} // namespace
+
+extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext *c,
+                                              const ds::u32 *ins,
+                                              const ds::u32 *keys, ds::u32 n) {
+  for (ds::u32 i = 0; i < n; ++i) {
+    if (ds::jit::jit_h_fallback(c, ins[i], keys[i]) ||
+        c->hot.cycle_budget <= 0 || c->halted || c->hot.alerts)
+      return 1;
   }
   return 0;
 }
+namespace ds::jit::backend {
+bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
+                     u32 &size) {
+  const u32 start = key_pc(key);
+  if (key_thumb(key) || !jc.ctx->page_table.read_ptr(start) || cap < 128)
+    return false;
+  const bool arm9 = jc.ctx->which == ds::Cpu::ARM9;
+  const char *native_env = std::getenv("DS_MIPS_NATIVE");
+  const bool use_native = arm9 && native_env && std::strcmp(native_env, "0");
+  const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
+  const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
+  u32 native_count = 0;
+  std::vector<u32> is, ks;
+  u32 addr = start;
+  const u32 page = start & ~0xfffu;
+  for (u32 i = 0; i < 64 && ((addr & ~0xfffu) == page); i++) {
+    u8 *p = jc.ctx->page_table.read_ptr(addr);
+    if (!p)
+      break;
+    u32 x;
+    std::memcpy(&x, p, 4);
+    const bool br =
+        (x & 0x0e000000u) == 0x0a000000u || (x & 0x0ffffff0u) == 0x012fff10u;
+    is.push_back(x);
+    ks.push_back(make_key(addr, false));
+    addr += 4;
+    if (br)
+      break;
+  }
+  if (is.empty())
+    return false;
+  MipsEmitter e(buf, cap);
+  e.addiu(R_SP, R_SP, use_native ? -64 : -24);
+  e.sw(R_CTX, 16, R_SP);
+  e.sw(R_RA, 20, R_SP);
+  if (use_native) {
+    for (u32 r = 0; r < 8; ++r)
+      e.sw(17 + r, 24 + 4 * r, R_SP);
+  }
+  e.move(R_CTX, 4);
+  if (use_native)
+    reload(e);
+  std::vector<B> bs;
+  std::vector<size_t> ex;
+  for (u32 q = 0; q < is.size();) {
+    N n{};
+    if (use_native && (!native_limit || native_count < native_limit) &&
+        native(is[q], n, true)) {
+      note_code_dep(b, key_pc(ks[q]) + 8);
+      emit_arm9_timing(e, *jc.ctx, key_pc(ks[q]));
+      size_t skip = 0;
+      if (n.cond != 14) {
+        e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
+        e.srl(T0, T0, 30);
+        e.andi(T0, T0, 1);
+        skip = n.cond == 0 ? e.beq(T0, 0) : e.bnez(T0);
+        e.nop();
+      }
+      emit_n(e, n);
+      if (skip)
+        e.patch_branch(skip, e.size());
+      e.lw(T0, OR + 60, R_CTX);
+      e.addiu(T0, T0, 4);
+      e.sw(T0, OR + 60, R_CTX);
+      e.lw(T0, OB, R_CTX);
+      ex.push_back(e.bltz(T0));
+      e.nop();
+      ++native_count;
+      ++q;
+      continue;
+    }
+    B x{};
+    u32 z = q;
+    while (q < is.size() &&
+           !(use_native && (!native_limit || native_count < native_limit) &&
+             native(is[q], n, true))) {
+      x.i.push_back(is[q]);
+      x.k.push_back(ks[q++]);
+    }
+    if (use_native)
+      sync(e);
+    x.ip = e.size();
+    e.lui(5, 0);
+    e.ori(5, 5, 0);
+    x.kp = e.size();
+    e.lui(6, 0);
+    e.ori(6, 6, 0);
+    e.addiu(7, 0, q - z);
+    e.move(4, R_CTX);
+    e.load_ptr(25, reinterpret_cast<const void *>(&ds_jit_mips_fallback_block));
+    e.jalr(R_RA, 25);
+    e.nop();
+    if (use_native)
+      reload(e);
+    x.br = e.bnez(2);
+    e.nop();
+    bs.push_back(std::move(x));
+  }
+  const size_t done = e.size();
+  for (size_t p : ex)
+    e.patch_branch(p, done);
+  for (B &x : bs)
+    e.patch_branch(x.br, done);
+  if (use_native) {
+    sync(e);
+    for (u32 r = 0; r < 8; ++r)
+      e.lw(17 + r, 24 + 4 * r, R_SP);
+  }
+  e.lw(R_CTX, 16, R_SP);
+  e.lw(R_RA, 20, R_SP);
+  e.addiu(R_SP, R_SP, use_native ? 64 : 24);
+  e.jr(R_RA);
+  e.nop();
+  for (B &x : bs) {
+    while (e.size() & 3)
+      e.nop();
+    size_t ip = e.size();
+    for (u32 v : x.i)
+      e.w(v);
+    size_t kp = e.size();
+    for (u32 v : x.k)
+      e.w(v);
+    e.patch_ptr(x.ip, 5, buf + ip);
+    e.patch_ptr(x.kp, 6, buf + kp);
+  }
+  size = e.size();
+  b.guest_len = addr - start;
+  b.hot_size = size;
+  b.npages = 1;
+  b.nsucc = 0;
+  b.dead = false;
+  u8 *h = jc.ctx->page_table.read_ptr(start);
+  b.host_pages[0] = reinterpret_cast<const u8 *>(
+      reinterpret_cast<uintptr_t>(h) & ~uintptr_t{4095});
+  b.host_lo = h;
+  b.host_hi = h + b.guest_len - 1;
+  return true;
+}
+} // namespace ds::jit::backend
