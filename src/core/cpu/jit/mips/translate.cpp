@@ -15,7 +15,7 @@ using ds::s32;
 using ds::u32;
 using ds::arm::AOp;
 using ds::jit::MipsEmitter;
-constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, T0 = 8, T1 = 9, T2 = 10;
+constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, T0 = 8, T1 = 9, T2 = 10, T3 = 11;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond;
@@ -81,6 +81,18 @@ static void getr(MipsEmitter &e, u32 d, u32 r) {
 static void putr(MipsEmitter &e, u32 r, u32 s) {
   e.sw(s, OR + 4 * r, R_CTX);
 }
+static void emit_sub_safe(MipsEmitter &e) {
+  // a-b == a+(~b)+1; ripple carry avoids the unstable arithmetic opcodes.
+  e.nor(T1, T1, 0);
+  e.addiu(T1, T1, 1);
+  for (int i = 0; i < 32; ++i) {
+    e.xor_(T2, T0, T1);
+    e.and_(T3, T0, T1);
+    e.sll(T3, T3, 1);
+    e.or_(T0, T2, 0);
+    e.or_(T1, T3, 0);
+  }
+}
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
   const u32 page = addr >> 12;
   for (u32 i = 0; i < b.ndep; ++i)
@@ -117,7 +129,8 @@ static void emit_n(MipsEmitter &e, const N &n) {
     e.xor_(T2, T0, T1);
     break;
   case 2:
-    e.subu(T2, T0, T1);
+    emit_sub_safe(e);
+    e.or_(T2, T0, 0);
     break;
   case 4:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
