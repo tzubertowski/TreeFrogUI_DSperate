@@ -2,8 +2,10 @@
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export DS_HCGE=1
 export DS_HCGE_DIAG=1
-export DS_MIPS_JIT=${DS_MIPS_JIT:-0}
-export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-0}
+export DS_LOG_FLUSH=1
+export DS_MIPS_JIT=${DS_MIPS_JIT:-1}
+export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-1}
+export DS_MIPS_NATIVE_LIMIT=${DS_MIPS_NATIVE_LIMIT:-5}
 export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$HOME/run.log"
