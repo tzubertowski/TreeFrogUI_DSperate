@@ -42,8 +42,11 @@ public:
   // Feeds one SDL event; `display` maps window points onto the screens. In
   // dual-window mode `second` is the other window, routed by windowID.
   void handle(const SDL_Event& e, Display& display, Display* second = nullptr);
-  // State for the coming frame. A press+release both arrived since the last
-  // frame still counts as held this frame; the release lands on the next one.
+  void poll();
+  // The state for the coming frame. A press and release that both arrived
+  // since the last frame (a quick tap between two polls, common when frames
+  // take 30 ms) still count as held for this frame: the release lands on
+  // the next one, so the game sees every tap.
   input::Frame frame() {
     const input::Frame f{static_cast<u16>(buttons_ | pressed_ | stick_ | face_stick_), static_cast<u8>(touch_x_), static_cast<u8>(touch_y_), touching_ || touched_ || stylus_down_ != 0};
     pressed_ = 0; stick_pressed_ = 0; touched_ = false;
@@ -84,7 +87,7 @@ public:
   // the d-pad while the pad.stylus_dpad chord is held.
   void update_stylus();
   bool stylus_visible_binding() const;   // some pad control drives the pen
-  bool stylus_visible() const { return (stylus_axis_ != StylusAxis::None || stylus_chord_.kind != Bind::None) && pad_ != nullptr && stylus_idle_ < stylus_hide_; }   // hidden after stylus_hide idle frames
+  bool stylus_visible() const { return (stylus_axis_ != StylusAxis::None || stylus_chord_.kind != Bind::None) && (pad_ != nullptr || raw_pad_ != nullptr) && stylus_idle_ < stylus_hide_; }   // hidden after stylus_hide idle frames
   int  stylus_x() const { return static_cast<int>(stylus_fx_); }
   int  stylus_y() const { return static_cast<int>(stylus_fy_); }
   int  stylus_size() const { return stylus_size_; }
@@ -93,7 +96,7 @@ public:
   void request_quit() { quit_ = true; }
 
   // Rebinding, for the Controls page.
-  bool has_pad() const { return pad_ != nullptr; }
+  bool has_pad() const { return pad_ != nullptr || raw_pad_ != nullptr || cv_keys_ != nullptr; }
   // While capturing, the next physical key or pad control is taken as a name
   // instead of fed to the game or matched against a hotkey. `pad` picks
   // which device is listened to.
@@ -205,6 +208,10 @@ private:
   bool lid_ = false, mic_key_ = false, mic_pad_ = false, ff_key_ = false, ff_pad_ = false;
   u32  noise_ = 0x2545F491;
   SDL_GameController* pad_ = nullptr;
+  SDL_Joystick* raw_pad_ = nullptr;
+  u32 raw_buttons_ = 0;
+  volatile u32* cv_keys_ = nullptr;
+  u32 cv_prev_ = 0;
 
   Bind key_map_[io::Io::BTN_COUNT];
   Bind pad_map_[io::Io::BTN_COUNT];

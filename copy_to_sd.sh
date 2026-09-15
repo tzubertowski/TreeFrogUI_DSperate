@@ -8,7 +8,14 @@ for root in "/run/media/$USER/R36HD" "$HOME/SDCARD"; do
 done
 [ -n "$sd" ] || { echo "SD card not found" >&2; exit 1; }
 
-cp "$repo/build/sf3000-package/dsperate" "$sd/dsperate"
+src="$repo/build/sf3000-package/dsperate"
+cp "$src" "$sd/dsperate"
 cp "$repo/run_sf3000.sh" "$sd/run_sf3000.sh"
 sync
-echo "DSperate copied to $sd"
+src_hash=$(sha256sum "$src" | awk '{print $1}')
+dst_hash=$(sha256sum "$sd/dsperate" | awk '{print $1}')
+[ "$src_hash" = "$dst_hash" ] || {
+  echo "DSperate verification failed: source=$src_hash sd=$dst_hash" >&2
+  exit 1
+}
+echo "DSperate copied and verified: $dst_hash"

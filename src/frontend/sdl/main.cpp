@@ -1451,7 +1451,7 @@ int main(int argc, char** argv) {
     vs.gpu_present = g == "rga" || g == "vulkan" || g == "true" || g == "auto" || g == "on" || g == "1";
   }
 
-  u32 init = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER;
+  u32 init = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
   if (audio_on || mic_on) init |= SDL_INIT_AUDIO;
   // Prefer SDL's native pipewire backend over Pulse (more daemon/wakeup cost).
   const std::string audio_driver = cfg.str("audio.driver", "pipewire");
@@ -1616,6 +1616,7 @@ sdl_ready:
     while (!done) {
       SDL_Event e;
       while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
+      input.poll();
       if (input.quit() || g_signalled || ((input.take_menu_presses() >> ds::io::Io::Button::BTN_B) & 1)) cancel = true;
       const Uint32 now = SDL_GetTicks();
       const u64 p = progress.load();
@@ -3204,6 +3205,7 @@ sdl_ready:
     SDL_Event e;
     input.set_menu_open(menu.open());
     while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
+    input.poll();
     for (ds::sdl::Action a : input.take_actions()) {
       using A = ds::sdl::Action;
       switch (a) {
