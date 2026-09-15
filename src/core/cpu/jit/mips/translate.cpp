@@ -236,6 +236,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.lw(T0, OB, R_CTX);
       ex.push_back(e.bltz(T0));
       e.nop();
+      // 74Kc/XBurst can mis-handle back-to-back generated load/store groups.
+      // Keep a real instruction boundary between native guest operations.
+      e.nop();
       ++native_count;
       ++q;
       continue;
