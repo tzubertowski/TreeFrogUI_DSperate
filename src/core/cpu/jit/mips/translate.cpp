@@ -41,8 +41,9 @@ static bool native(u32 x, N &n, bool shifts) {
   n.setflags = x & (1u << 20);
   if (n.rd == 15 || n.rn == 15 || n.rm == 15)
     return false;
-  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12 &&
-      n.op != 14 && n.op != 15)
+  // Hardware-proven set. BIC/MVN (14/15) remain interpreter fallbacks: their
+  // complemented operand forms were the repeatable source of SF3000 crashes.
+  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12)
     return false;
   // Keep CPSR updates in the interpreter until the hardware path is proven.
   if (n.setflags)
