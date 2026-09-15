@@ -41,7 +41,7 @@ static bool native(u32 x, N &n, bool shifts) {
   n.setflags = x & (1u << 20);
   if (n.rd == 15 || n.rn == 15 || n.rm == 15)
     return false;
-  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 12 &&
+  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 12 &&
       n.op != 14 && n.op != 15)
     return false;
   // Keep CPSR updates in the interpreter until the hardware path is proven.
