@@ -33,6 +33,7 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   n.op = (x >> 21) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
+  const bool force_sub = op_env && std::strtoul(op_env, nullptr, 10) == 2;
   if (op_env && n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
     return false;
   n.rd = (x >> 12) & 15;
@@ -43,7 +44,7 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   // Hardware-proven set. BIC/MVN (14/15) remain interpreter fallbacks: their
   // complemented operand forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12)
+  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12 && !(force_sub && n.op == 2))
     return false;
   // Keep CPSR updates in the interpreter until the hardware path is proven.
   if (n.setflags)
@@ -118,9 +119,12 @@ static void emit_n(MipsEmitter &e, const N &n) {
     e.xor_(T2, T0, T1);
     break;
   case 2:
+    // Test-only path: a-b = ~(~a+b), reusing the known-safe ADD lowering.
+    e.nor(T0, T0, 0);
     e.nor(T1, T1, 0);
-    e.addiu(T1, T1, 1);
-    e.addu(T2, T0, T1);
+    e.subu(T2, T0, T1);
+    e.addiu(T2, T2, -1);
+    e.nor(T2, T2, 0);
     break;
   case 4:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
