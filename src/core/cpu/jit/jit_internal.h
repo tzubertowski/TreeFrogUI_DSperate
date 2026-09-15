@@ -260,11 +260,17 @@ void        jit_h_st16(CpuContext* cpu, u32 addr, u32 v);
 void        jit_h_st32(CpuContext* cpu, u32 addr, u32 v);
 }
 
-// Flush the instruction cache for freshly written code. The SF3000 uses the
-// compiler-provided MIPS sequence; its firmware rejects cacheflush(BCACHE).
+// Flush the instruction cache for freshly written code.
+#if defined(DSPERATE_JIT_MIPS)
+extern "C" void ds_jit_mips_make_code_visible(u8*, size_t);
+inline void sync_icache(u8* start, size_t len) {
+  ds_jit_mips_make_code_visible(start, len);
+}
+#else
 inline void sync_icache(u8* start, size_t len) {
   __builtin___clear_cache(reinterpret_cast<char*>(start),
                           reinterpret_cast<char*>(start + len));
 }
+#endif
 
 } // namespace ds::jit
