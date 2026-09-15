@@ -120,7 +120,11 @@ static void emit_n(MipsEmitter &e, const N &n) {
     e.subu(T2, T0, T1);
     break;
   case 4:
-    e.addu(T2, T0, T1);
+    // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
+    // Equivalent modulo-32-bit form keeps ADD native without that opcode.
+    e.nor(T1, T1, 0);
+    e.subu(T2, T0, T1);
+    e.addiu(T2, T2, -1);
     break;
   case 12:
     e.or_(T2, T0, T1);
