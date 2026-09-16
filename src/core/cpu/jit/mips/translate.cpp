@@ -3,6 +3,7 @@
 #include "core/cpu/jit/mips/emit.h"
 #include "core/mem/timing.h"
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -194,6 +195,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   const bool use_native = arm9 && native_env && std::strcmp(native_env, "0");
   const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
   const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
+  const bool native_trace = std::getenv("DS_MIPS_NATIVE_TRACE") &&
+                            std::strcmp(std::getenv("DS_MIPS_NATIVE_TRACE"), "0");
   u32 native_count = 0;
   std::vector<u32> is, ks;
   u32 addr = start;
@@ -228,6 +231,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     N n{};
     if (use_native && (!native_limit || native_count < native_limit) &&
         native(is[q], n, true)) {
+      if (native_trace)
+        std::fprintf(stderr,
+                     "[mips-jit] native pc=%08x ins=%08x op=%u rd=%u rn=%u rm=%u %s\n",
+                     key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
+                     n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + 8);
       emit_arm9_timing(e, *jc.ctx, key_pc(ks[q]));
       size_t skip = 0;
@@ -245,7 +253,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.addiu(T0, T0, 4);
       e.sw(T0, OR + 60, R_CTX);
       e.lw(T0, OB, R_CTX);
-      ex.push_back(e.bltz(T0));
+      // Native timing must leave at the same boundary as the interpreter:
+      // budget exhaustion at exactly zero is already out of budget.
+      ex.push_back(e.blez(T0));
       e.nop();
       // 74Kc/XBurst can mis-handle back-to-back generated load/store groups.
       // Keep a real instruction boundary between native guest operations.

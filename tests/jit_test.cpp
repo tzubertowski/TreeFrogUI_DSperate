@@ -618,7 +618,9 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     const bool a9 = d.which == Cpu::ARM9;
     Machine mi(d.which), mj(d.which);
     CHECK(jit::attach(mj.nds, a9, !a9));
-    Trial t;
+    Trial t{};
+    t.thumb = false;
+    t.cpsr = 0;
     t.thumb = d.thumb;
     t.code = d.code;
     for (int i = 0; i < 15; ++i) t.regs[i] = d.regs[i];
@@ -658,7 +660,9 @@ void native_alu(int only = -1) {
     if (only >= 0 && static_cast<int>(which) != only) continue;
     Machine mi(which), mj(which);
     CHECK(jit::attach(mj.nds, which == Cpu::ARM9, which == Cpu::ARM7));
-    Trial t;
+    Trial t{};
+    t.thumb = false;
+    t.cpsr = 0;
     t.code.reserve(64);
     for (u32 i = 0; i < 8; ++i) {
       const u32 op = ops[i];
