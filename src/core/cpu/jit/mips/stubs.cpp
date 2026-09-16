@@ -20,7 +20,11 @@ void emit_stubs(Runtime& rt) {
   // caller using its own saved ra.
   e.jr(5); e.nop();
   rt.enter_light=e.cur(); rt.run_loop=&ds_jit_mips_run_loop; rt.exit_key=e.cur(); rt.exit_key_lit=nullptr;
-  rt.exit_r15=nullptr; rt.call_pure=nullptr; rt.call_full=nullptr; rt.call2=nullptr; rt.poll=nullptr; rt.flush_exit=nullptr;
+  rt.exit_r15=nullptr; rt.call_pure=nullptr; rt.call_full=nullptr; rt.call2=nullptr; rt.poll=nullptr;
+  // Arena exhaustion returns here from the dispatcher.  A null target used
+  // to turn a harmless refill into a jump to address zero on long runs.
+  rt.flush_exit=e.cur();
+  e.jr(R_RA); e.nop();
   for(auto& c:rt.cpus){
     c.dispatch=e.cur();
     // Keep the 16-byte o32 outgoing argument area and 8-byte stack alignment.
