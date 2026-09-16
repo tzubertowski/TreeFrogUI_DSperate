@@ -75,13 +75,19 @@ static void emit_arm9_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
   li(e, T0, pc + 8);
   e.sw(T0, OR + 60, R_CTX);
   e.lw(T0, OB, R_CTX);
+  // Some SF3000 MIPS revisions do not reliably interlock generated
+  // load/use pairs.  Keep the native path conservative; fallback code is
+  // call-heavy and naturally supplies these bubbles.
+  e.nop();
   e.addiu(T0, T0, -static_cast<s32>(cost));
   e.sw(T0, OB, R_CTX);
 }
 static void getr(MipsEmitter &e, u32 d, u32 r) {
   e.lw(d, OR + 4 * r, R_CTX);
+  e.nop();
 }
 static void putr(MipsEmitter &e, u32 r, u32 s) {
+  e.nop();
   e.sw(s, OR + 4 * r, R_CTX);
 }
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
@@ -250,9 +256,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (skip)
         e.patch_branch(skip, e.size());
       e.lw(T0, OR + 60, R_CTX);
+      e.nop();
       e.addiu(T0, T0, 4);
       e.sw(T0, OR + 60, R_CTX);
       e.lw(T0, OB, R_CTX);
+      e.nop();
       // Native timing must leave at the same boundary as the interpreter:
       // budget exhaustion at exactly zero is already out of budget.
       ex.push_back(e.blez(T0));
