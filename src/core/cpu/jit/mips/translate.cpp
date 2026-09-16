@@ -26,15 +26,22 @@ static u32 ai(u32 x) {
   u32 v = x & 255, n = ((x >> 8) & 15) * 2;
   return n ? (v >> n) | (v << (32 - n)) : v;
 }
-static bool native(u32 x, N &n, bool shifts) {
+static int native_op_filter() {
+  const char *s = std::getenv("DS_MIPS_NATIVE_OP");
+  if (!s || !*s)
+    return -1;
+  char *end = nullptr;
+  const long v = std::strtol(s, &end, 10);
+  return end != s && *end == '\0' && v >= 0 && v <= 15 ? static_cast<int>(v) : -2;
+}
+static bool native(u32 x, N &n, bool shifts, int op_filter) {
   AOp a = ds::arm::decode_arm(x);
   n.cond = x >> 28;
   if (n.cond != 14 || (a != AOp::DpImm && a != AOp::DpImmShift))
     return false;
   n.op = (x >> 21) & 15;
-  const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
-  const bool force_sub = op_env && std::strtoul(op_env, nullptr, 10) == 2;
-  if (op_env && n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
+  const bool force_sub = op_filter == 2;
+  if (op_filter >= 0 && n.op != static_cast<u32>(op_filter))
     return false;
   n.rd = (x >> 12) & 15;
   n.rn = (x >> 16) & 15;
@@ -194,6 +201,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   const bool use_native = arm9 && native_env && std::strcmp(native_env, "0");
   const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
   const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
+  const int op_filter = native_op_filter();
   u32 native_count = 0;
   std::vector<u32> is, ks;
   u32 addr = start;
@@ -227,7 +235,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   for (u32 q = 0; q < is.size();) {
     N n{};
     if (use_native && (!native_limit || native_count < native_limit) &&
-        native(is[q], n, true)) {
+        native(is[q], n, true, op_filter)) {
       note_code_dep(b, key_pc(ks[q]) + 8);
       emit_arm9_timing(e, *jc.ctx, key_pc(ks[q]));
       size_t skip = 0;
@@ -258,7 +266,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     u32 z = q;
     while (q < is.size() &&
            !(use_native && (!native_limit || native_count < native_limit) &&
-             native(is[q], n, true))) {
+             native(is[q], n, true, op_filter))) {
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
     }
