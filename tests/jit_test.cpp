@@ -12,7 +12,7 @@
 #include "check.h"
 
 #include <cstdio>
-#include <string>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -656,6 +656,12 @@ void native_alu(int only = -1) {
   // and each native register form gets exercised without relying on flags.
   const u32 ops[] = {13, 15, 4, 2, 0, 1, 12, 14}; // MOV MVN ADD SUB AND EOR ORR BIC
   const u32 rotates[] = {0, 1, 4, 8, 12, 15};
+  // MIPS native lowering is opt-in in production.  Make this test exercise
+  // the smallest risky form deterministically instead of depending on the
+  // caller's environment (or silently testing fallback code).
+  setenv("DS_MIPS_NATIVE", "1", 1);
+  setenv("DS_MIPS_NATIVE_OP", "0", 1); // AND only
+  unsetenv("DS_MIPS_NATIVE_LIMIT");
   for (Cpu which : {Cpu::ARM9, Cpu::ARM7}) {
     if (only >= 0 && static_cast<int>(which) != only) continue;
     Machine mi(which), mj(which);
@@ -680,6 +686,8 @@ void native_alu(int only = -1) {
     CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
     jit::detach(mj.nds);
   }
+  unsetenv("DS_MIPS_NATIVE_OP");
+  unsetenv("DS_MIPS_NATIVE");
   std::puts("jit native ALU: immediate+register forms ok");
 }
 
