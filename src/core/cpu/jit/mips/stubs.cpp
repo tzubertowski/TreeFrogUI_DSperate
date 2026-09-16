@@ -33,6 +33,10 @@ void emit_stubs(Runtime& rt) {
     c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;
   }
   rt.stubs_end=LUT_AREA+e.size(); rt.pos=rt.stubs_end;
+  // The first JIT entry is executed immediately after attach.  MIPS has
+  // separate I/D caches; make the freshly emitted dispatcher visible before
+  // handing its address to the runtime.
+  sync_icache(rt.arena + LUT_AREA, e.size());
 }
 void write_entry_redirect(u8* entry,u32 key,const u8* dispatch){MipsEmitter e(entry,ENTRY_PATCH);e.lui(SCRATCH0,key>>16);e.j(reinterpret_cast<uintptr_t>(dispatch));e.ori(SCRATCH0,SCRATCH0,key);}
 void patch_link(u8* site,const u8* target){MipsEmitter::patch(site,0x08000000u|((reinterpret_cast<uintptr_t>(target)>>2)&0x03ffffff));}
