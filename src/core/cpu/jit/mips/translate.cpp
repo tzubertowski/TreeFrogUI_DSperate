@@ -41,7 +41,9 @@ static bool native(u32 x, N &n, bool shifts) {
   n.rn = (x >> 16) & 15;
   n.rm = x & 15;
   n.setflags = x & (1u << 20);
-  if (n.rd == 15 || n.rn == 15 || n.rm == 15)
+  // In immediate forms the low nibble belongs to imm8, not Rm.  Rejecting
+  // rm==15 here silently routed valid immediate ALU instructions to fallback.
+  if (n.rd == 15 || n.rn == 15 || (a != AOp::DpImm && n.rm == 15))
     return false;
   // Hardware-proven set. BIC/MVN (14/15) remain interpreter fallbacks: their
   // complemented operand forms were the repeatable source of SF3000 crashes.
