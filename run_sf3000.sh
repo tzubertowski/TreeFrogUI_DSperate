@@ -4,9 +4,8 @@ export DS_HCGE=1
 export DS_HCGE_DIAG=${DS_HCGE_DIAG:-0}
 export DS_LOG_FLUSH=1
 export DS_MIPS_JIT=${DS_MIPS_JIT:-1}
-export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-1}
+export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-0}
 # Experimental native SUB lowering stays opt-in; it is not release-safe.
-export DS_MIPS_NATIVE_LIMIT=${DS_MIPS_NATIVE_LIMIT:-5}
 export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$HOME/run.log"
