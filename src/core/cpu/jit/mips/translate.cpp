@@ -68,6 +68,10 @@ static bool native(u32 x, N &n, bool shifts) {
          (n.shift && (n.shift_type == 1 || n.shift_type == 2));
 }
 static void li(MipsEmitter &e, u32 r, u32 v) {
+  if (v < 0x8000u) {
+    e.addiu(r, 0, static_cast<s32>(v));
+    return;
+  }
   e.lui(r, v >> 16);
   e.ori(r, r, v);
 }
@@ -78,8 +82,7 @@ static void emit_arm9_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
   e.sw(T0, OR + 60, R_CTX);
   e.lw(T0, OB, R_CTX);
   // Some SF3000 MIPS revisions do not reliably interlock generated
-  // load/use pairs.  Keep the native path conservative; fallback code is
-  // call-heavy and naturally supplies these bubbles.
+  // load/use pairs. Keep the native path conservative.
   e.nop();
   e.addiu(T0, T0, -static_cast<s32>(cost));
   e.sw(T0, OB, R_CTX);
