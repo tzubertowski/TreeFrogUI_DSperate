@@ -7,7 +7,6 @@
 #include "core/cpu/cpu.h"
 
 #include <cstddef>
-#include <cstdlib>
 #include <deque>
 #include <unordered_map>
 #include <vector>
@@ -263,13 +262,11 @@ void        jit_h_st32(CpuContext* cpu, u32 addr, u32 v);
 extern "C" void ds_jit_mips_make_code_visible(u8*, size_t);
 inline void sync_icache(u8* start, size_t len) {
   ds_jit_mips_make_code_visible(start, len);
-  // Some SF3000 firmware revisions do not make synci-visible writes
-  // executable until the kernel cacheflush path is also called.  Keep this
-  // diagnostic fallback opt-in: the syscall is too expensive per block for
-  // the normal JIT path.
-  if (std::getenv("DS_MIPS_CACHE_SYSCALL"))
-    __builtin___clear_cache(reinterpret_cast<char*>(start),
-                            reinterpret_cast<char*>(start + len));
+  // SF3000 hardware does not reliably make synci-visible writes executable
+  // until the kernel cacheflush path is also called.  QEMU's coherent cache
+  // hid this; correctness requires both publication paths on the target.
+  __builtin___clear_cache(reinterpret_cast<char*>(start),
+                          reinterpret_cast<char*>(start + len));
 }
 #else
 inline void sync_icache(u8* start, size_t len) {
