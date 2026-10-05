@@ -223,6 +223,7 @@ private:
   SDL_Window*   win_ = nullptr;
   SDL_Renderer* ren_ = nullptr;
   std::unique_ptr<HcgeOut> hcge_;
+  int           hcge_w_ = 0, hcge_h_ = 0;
   SDL_Texture*  tex_[SCREENS] = {nullptr, nullptr};
   View          views_[SCREENS] = {};
   int           nviews_ = SCREENS;

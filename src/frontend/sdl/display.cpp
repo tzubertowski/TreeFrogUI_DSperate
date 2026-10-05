@@ -140,6 +140,11 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   int w = 0, h = 0;
   if (only_screen_ >= 0) { w = static_cast<int>(SCREEN_W) * scale; h = static_cast<int>(SCREEN_H) * scale; }
   else natural_size(layout_, scale, w, h);
+  // HCGE consumes a fixed 320x240 RGB565 frame.  Keep the SDL window and
+  // layout in that same logical space; using the natural dual-screen size
+  // here makes the driver display only the upper-left portion on hardware.
+  const bool hcge_wanted = std::getenv("DS_HCGE") != nullptr && only_screen_ < 0;
+  if (hcge_wanted) { w = 320; h = 240; }
   int rot = rot_wanted_;
   if (!rot) if (const char* r = std::getenv("DS_ROTATE")) rot = std::atoi(r);
   rot = ((rot % 360) + 360) % 360;
@@ -152,7 +157,7 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   rot_ = 0;
   if (std::getenv("DS_HCGE")) {
     auto hcg = std::make_unique<HcgeOut>();
-    if (hcg->open()) { hcge_ = std::move(hcg); sink_ = Sink::Renderer; layout(); return true; }
+    if (hcg->open()) { hcge_ = std::move(hcg); hcge_w_ = w; hcge_h_ = h; sink_ = Sink::Renderer; layout(); return true; }
   }
 
   if (panel && panel_ == Sink::Disp && open_disp(linear, vsync, rot)) { sink_ = Sink::Disp; return true; }
@@ -469,7 +474,7 @@ void Display::draw_async(Display* const ds[], int n, const u32* const fb[SCREENS
 void Display::draw(const u32* const fb[SCREENS]) {
   sync();
   if (hcge_) {
-    int w=0,h=0; natural_size(layout_, 1.0, w, h); int scr[2]={0,1}; int r[2][4]{}; bool shown[2]={false,false};
+    const int w = hcge_w_, h = hcge_h_; int scr[2]={0,1}; int r[2][4]{}; bool shown[2]={false,false};
     for (int i=0;i<nviews_;++i) { scr[i]=views_[i].screen; r[i][0]=views_[i].rect.x; r[i][1]=views_[i].rect.y; r[i][2]=views_[i].rect.w; r[i][3]=views_[i].rect.h; shown[i]=views_[i].shown; }
     hcge_->present(fb,scr,r,shown,inset_alpha_,w,h); return;
   }
