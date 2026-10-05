@@ -27,6 +27,7 @@ public:
   void move(u32 d,u32 s){addu(d,s,0);}
   void lw(u32 d,s32 o,u32 s){w(0x8c000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void sw(u32 d,s32 o,u32 s){w(0xac000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
+  void sb(u32 d,s32 o,u32 s){w(0xa0000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void jr(u32 r){w(0x00000008u|(r<<21));} void jalr(u32 d,u32 r){w(0|(r<<21)|(d<<11)|9);}
   void nop(){w(0);}
   void j(u32 target){w(0x08000000u|((target>>2)&0x03ffffff));}

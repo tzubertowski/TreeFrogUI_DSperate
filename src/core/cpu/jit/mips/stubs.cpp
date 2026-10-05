@@ -32,6 +32,16 @@ void emit_stubs(Runtime& rt) {
     e.jr(2); e.nop();
     c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;
   }
+  // Upstream runtime uses these exits when a cold lookup or full arena must
+  // return to its C scheduler. MIPS enters native code with the caller's RA,
+  // so a plain return is sufficient; no guest registers are pinned here.
+  rt.exit_r15 = e.cur();
+  e.jr(R_RA); e.nop();
+  rt.flush_exit = e.cur();
+  e.load_ptr(SCRATCH0, &rt.need_reset);
+  e.addiu(SCRATCH1, 0, 1);
+  e.sb(SCRATCH1, 0, SCRATCH0);
+  e.jr(R_RA); e.nop();
   rt.stubs_end=LUT_AREA+e.size(); rt.pos=rt.stubs_end;
   // The first JIT entry is executed immediately after attach.  MIPS has
   // separate I/D caches; make the freshly emitted dispatcher visible before
