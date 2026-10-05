@@ -24,6 +24,16 @@ export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$here/data/run.log"
 echo "dsperate: jit=$DS_MIPS_JIT native=$DS_MIPS_NATIVE limit=$DS_MIPS_NATIVE_LIMIT" >>"$here/data/run.log"
+args=""
+for a in "$@"; do args="$args [$a]"; done
+echo "dsperate: args$args" >>"$here/data/run.log"
+# Some SF3000 menu revisions hand standalone launchers the battery-save path
+# instead of the content path.  A .sav is never a DS cartridge; recover the
+# neighbouring .nds so the core still starts the selected game.
+if [ "$#" -eq 1 ] && case "$1" in *.sav|*.SAV) true;; *) false;; esac; then
+  rom=${1%.*}.nds
+  [ -f "$rom" ] && set -- "$rom"
+fi
 if "$here/lib/ld.so.1" --library-path "$here/lib:/mnt/sdcard/cubegm/usr/lib:/mnt/sdcard/cubegm/lib" "$here/dsperate" "$@" --no-mic --no-audio >>"$here/data/run.log" 2>&1; then rc=0; else rc=$?; fi
 echo "dsperate: exit=$rc" >>"$here/data/run.log"
 exit "$rc"
