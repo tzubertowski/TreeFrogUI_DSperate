@@ -540,7 +540,7 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 # pip_corner_next = none
 # screenshot = none
 # mic = leftstick
-# fps = none
+# fps = +lefttrigger       # L2 toggles the on-screen FPS counter
 
 [cheevos]
 # RetroAchievements, Casual mode (formerly Softcore). Hardcore is NOT supported!
