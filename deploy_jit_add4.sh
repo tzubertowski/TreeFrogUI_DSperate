@@ -4,6 +4,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 limit=${1:-4}
 native=${2:-1}
+jit=${3:-1}
 card=/run/media/${USER}/R36HD
 dst=$card/cubegm/dsperate
 [ -d "$dst" ] || { echo "R36HD not mounted at $card" >&2; exit 1; }
@@ -17,13 +18,13 @@ cat >"$launcher" <<'EOF'
 #!/bin/sh
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export DS_HCGE=1 DS_HCGE_DIAG=0 DS_LOG_FLUSH=1
-export DS_MIPS_JIT=1 DS_MIPS_NATIVE=__NATIVE__ DS_MIPS_NATIVE_OP=4 DS_MIPS_NATIVE_LIMIT=__LIMIT__
+export DS_MIPS_JIT=__JIT__ DS_MIPS_NATIVE=__NATIVE__ DS_MIPS_NATIVE_OP=4 DS_MIPS_NATIVE_LIMIT=__LIMIT__
 export HOME="$here/data"
 mkdir -p "$HOME"
 exec "$here/lib/ld.so.1" --library-path "$here/lib:/mnt/sdcard/cubegm/usr/lib:/mnt/sdcard/cubegm/lib" "$here/dsperate" "$@" --no-mic --no-audio
 EOF
 chmod 0755 "$launcher"
-sed -i "s/__NATIVE__/$native/; s/__LIMIT__/$limit/" "$launcher"
+sed -i "s/__JIT__/$jit/; s/__NATIVE__/$native/; s/__LIMIT__/$limit/" "$launcher"
 cp "$src" "$dst/dsperate"
 cp "$launcher" "$dst/run_sf3000.sh"
 sync
