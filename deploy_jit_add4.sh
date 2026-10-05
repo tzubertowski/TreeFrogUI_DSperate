@@ -27,7 +27,7 @@ cat >"$launcher" <<'EOF'
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export DS_HCGE=1 DS_HCGE_DIAG=0 DS_LOG_FLUSH=1
 export DS_SCANLINE_SCALE=1
-export DS_MIPS_JIT=__JIT__ DS_MIPS_NATIVE=__NATIVE__ DS_MIPS_NATIVE_OP=4 DS_MIPS_NATIVE_LIMIT=__LIMIT__
+export DS_MIPS_JIT=__JIT__ DS_MIPS_NATIVE=__NATIVE__ DS_MIPS_NATIVE_OP=all DS_MIPS_NATIVE_LIMIT=__LIMIT__
 export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$here/data/run.log"

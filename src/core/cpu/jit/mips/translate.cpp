@@ -35,7 +35,10 @@ static bool native(u32 x, N &n, bool shifts) {
   n.op = (x >> 21) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
   const bool force_sub = op_env && std::strtoul(op_env, nullptr, 10) == 2;
-  if (op_env && n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
+  // "all" enables the individually audited flagless ALU subset; a numeric
+  // value keeps the single-op canary useful on hardware with a flaky opcode.
+  if (op_env && std::strcmp(op_env, "all") != 0 &&
+      n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
     return false;
   n.rd = (x >> 12) & 15;
   n.rn = (x >> 16) & 15;
@@ -47,7 +50,8 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   // Hardware-proven set. BIC/MVN (14/15) remain interpreter fallbacks: their
   // complemented operand forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12 && !(force_sub && n.op == 2))
+  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12 && n.op != 13 &&
+      !(force_sub && n.op == 2))
     return false;
   // Keep CPSR updates in the interpreter until the hardware path is proven.
   if (n.setflags)
