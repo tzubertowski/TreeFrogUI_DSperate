@@ -5,7 +5,15 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 limit=${1:-4}
 native=${2:-1}
 jit=${3:-1}
-card=/run/media/${USER}/R36HD
+card=${CARD_MOUNT:-}
+if [ -z "$card" ]; then
+  label_path=$(blkid -L R36HD 2>/dev/null || true)
+  if [ -d "$label_path" ]; then card=$label_path
+  else card=$(findmnt -rn -S "$label_path" -o TARGET 2>/dev/null || true)
+  fi
+fi
+[ -n "$card" ] || [ ! -d /home/${USER}/SDCARD ] || card=/home/${USER}/SDCARD
+[ -n "$card" ] || card=/run/media/${USER}/R36HD
 dst=$card/cubegm/dsperate
 [ -d "$dst" ] || { echo "R36HD not mounted at $card" >&2; exit 1; }
 [ -w "$dst" ] || { echo "R36HD is read-only; remount it read-write" >&2; exit 1; }
