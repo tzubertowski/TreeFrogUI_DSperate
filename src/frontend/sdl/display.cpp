@@ -150,6 +150,10 @@ bool Display::open(const char* title, int scale, bool fullscreen, bool linear, b
   if (!win_) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return false; }
   fullscreen_ = fullscreen;
   rot_ = 0;
+  if (std::getenv("DS_HCGE")) {
+    auto hcg = std::make_unique<HcgeOut>();
+    if (hcg->open()) { hcge_ = std::move(hcg); sink_ = Sink::Renderer; layout(); return true; }
+  }
 
   if (panel && panel_ == Sink::Disp && open_disp(linear, vsync, rot)) { sink_ = Sink::Disp; return true; }
   if (panel && panel_ == Sink::Fbdev) {
@@ -311,6 +315,7 @@ bool Display::open_renderer(bool linear, bool vsync, int rot) {
 
 void Display::close() {
   sync();
+  if (hcge_) { hcge_->close(); hcge_.reset(); }
   if (disp_) { disp_->close(); disp_.reset(); }
   gpu_.reset();   // flushes what it has in flight
   if (out_) { out_->close(); out_.reset(); }
@@ -463,6 +468,11 @@ void Display::draw_async(Display* const ds[], int n, const u32* const fb[SCREENS
 
 void Display::draw(const u32* const fb[SCREENS]) {
   sync();
+  if (hcge_) {
+    int w=0,h=0; natural_size(layout_, 1.0, w, h); int scr[2]={0,1}; int r[2][4]{}; bool shown[2]={false,false};
+    for (int i=0;i<nviews_;++i) { scr[i]=views_[i].screen; r[i][0]=views_[i].rect.x; r[i][1]=views_[i].rect.y; r[i][2]=views_[i].rect.w; r[i][3]=views_[i].rect.h; shown[i]=views_[i].shown; }
+    hcge_->present(fb,scr,r,shown,inset_alpha_,w,h); return;
+  }
   if (gpu_) { draw_gpu(fb); return; }
   if (disp_) {
     if (disp_->overlay_available()) { disp_->overlay_changed(canvas_taken_); canvas_taken_ = false; }

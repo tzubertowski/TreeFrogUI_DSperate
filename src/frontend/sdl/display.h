@@ -8,6 +8,7 @@
 #include "frontend/video/select.h"
 #include "core/types.h"
 #include "display_disp.h"
+#include "display_hcge.h"
 #include "display_drm.h"  // complete types for the unique_ptr
 #include "display_fbdev.h"
 #include "display_wl.h"
@@ -221,6 +222,7 @@ private:
 
   SDL_Window*   win_ = nullptr;
   SDL_Renderer* ren_ = nullptr;
+  std::unique_ptr<HcgeOut> hcge_;
   SDL_Texture*  tex_[SCREENS] = {nullptr, nullptr};
   View          views_[SCREENS] = {};
   int           nviews_ = SCREENS;
