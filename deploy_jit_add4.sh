@@ -21,7 +21,11 @@ export DS_HCGE=1 DS_HCGE_DIAG=0 DS_LOG_FLUSH=1
 export DS_MIPS_JIT=__JIT__ DS_MIPS_NATIVE=__NATIVE__ DS_MIPS_NATIVE_OP=4 DS_MIPS_NATIVE_LIMIT=__LIMIT__
 export HOME="$here/data"
 mkdir -p "$HOME"
-exec "$here/lib/ld.so.1" --library-path "$here/lib:/mnt/sdcard/cubegm/usr/lib:/mnt/sdcard/cubegm/lib" "$here/dsperate" "$@" --no-mic --no-audio
+: >"$here/data/run.log"
+echo "dsperate: jit=$DS_MIPS_JIT native=$DS_MIPS_NATIVE limit=$DS_MIPS_NATIVE_LIMIT" >>"$here/data/run.log"
+if "$here/lib/ld.so.1" --library-path "$here/lib:/mnt/sdcard/cubegm/usr/lib:/mnt/sdcard/cubegm/lib" "$here/dsperate" "$@" --no-mic --no-audio >>"$here/data/run.log" 2>&1; then rc=0; else rc=$?; fi
+echo "dsperate: exit=$rc" >>"$here/data/run.log"
+exit "$rc"
 EOF
 chmod 0755 "$launcher"
 sed -i "s/__JIT__/$jit/; s/__NATIVE__/$native/; s/__LIMIT__/$limit/" "$launcher"
