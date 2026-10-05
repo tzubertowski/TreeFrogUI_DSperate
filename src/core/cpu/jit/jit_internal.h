@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ds::jit {
@@ -231,6 +232,7 @@ bool translate_block(JitCpu& jc, u32 key, u8* buf, size_t cap, Block& b, u32& si
 void write_entry_redirect(u8* entry, u32 key, const u8* dispatch);
 bool fastmem_capable();
 void patch_link(u8* site, const u8* target);
+u32 relative_branch_class(u32 instr);
 }
 
 // Helpers called from translated code (through the stubs).

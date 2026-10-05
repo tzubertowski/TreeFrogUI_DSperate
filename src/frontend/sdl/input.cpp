@@ -11,9 +11,6 @@
 #include <cstring>
 #include <cmath>
 #include <string>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <unistd.h>
 
 namespace ds::sdl {
 
@@ -35,17 +32,7 @@ const char* const kKeyHotDefaults[static_cast<int>(Action::Count)] = {
   "Escape", "p", "Tab", "none", "F5", "F7", "F3", "F2", "=", "-", "0", "F4", "F10", "F6", "F8", "f", "F9", "l", "m", "none"};
 const char* const kPadHotDefaults[static_cast<int>(Action::Count)] = {
   "mod+start+back", "mod+start", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
-  "none", "none", "none", "mod+back", "mod+x", "mod+y", "none", "none", "none", "none", "leftstick", "+lefttrigger"};
-
-// The handheld's raw joystick layout is the same physical order used by
-// pcsx4all: triangle, circle, cross, square, L1, R1, L2, R2, select, start.
-int raw_button_to_sdl(int b) {
-  static constexpr int map[] = {SDL_CONTROLLER_BUTTON_Y, SDL_CONTROLLER_BUTTON_B,
-    SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
-    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_LEFTSTICK,
-    SDL_CONTROLLER_BUTTON_RIGHTSTICK, SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_START};
-  return b >= 0 && b < static_cast<int>(sizeof(map) / sizeof(map[0])) ? map[b] : -1;
-}
+  "none", "none", "none", "mod+back", "mod+x", "mod+y", "none", "none", "none", "none", "leftstick", "none"};
 
 // Controls that are neither a DS button nor a hotkey: hotkey modifier and
 // the pad-driven pen. Kept as one copy readable from both configure() and
@@ -346,34 +333,10 @@ void Input::warn_collisions() const {
 }
 
 void Input::open_controllers() {
-  const key_t key = ftok("/tmp/joy_key", 'a');
-  if (key != static_cast<key_t>(-1)) {
-    const int id = shmget(key, sizeof(u32), 0666);
-    if (id >= 0) {
-      void* p = shmat(id, nullptr, 0);
-      if (p != reinterpret_cast<void*>(-1)) {
-        cv_keys_ = static_cast<volatile u32*>(p);
-        cv_prev_ = *cv_keys_;
-        std::fprintf(stderr, "input: cubevol shared memory attached\n");
-      }
-    }
-  }
-  if (cv_keys_) return;
-  if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) != 0)
-    std::fprintf(stderr, "input: SDL joystick init failed: %s\n", SDL_GetError());
-  SDL_JoystickEventState(SDL_ENABLE);
-  const int count = SDL_NumJoysticks();
-  std::fprintf(stderr, "input: SDL joysticks=%d\n", count);
-  for (int i = 0; i < count && !pad_; ++i) {
-    if (SDL_IsGameController(i)) {
-      pad_ = SDL_GameControllerOpen(i);
-      if (pad_) std::fprintf(stderr, "controller: %s\n", SDL_GameControllerName(pad_));
-      else std::fprintf(stderr, "input: controller %d open failed: %s\n", i, SDL_GetError());
-    } else if (!raw_pad_) {
-      raw_pad_ = SDL_JoystickOpen(i);
-      if (raw_pad_) std::fprintf(stderr, "joystick: %s (raw fallback)\n", SDL_JoystickName(raw_pad_));
-      else std::fprintf(stderr, "input: joystick %d open failed: %s\n", i, SDL_GetError());
-    }
+  for (int i = 0; i < SDL_NumJoysticks() && !pad_; ++i) {
+    if (!SDL_IsGameController(i)) continue;
+    pad_ = SDL_GameControllerOpen(i);
+    if (pad_) std::fprintf(stderr, "controller: %s\n", SDL_GameControllerName(pad_));
   }
   detect_faces();
 }
@@ -389,42 +352,6 @@ void Input::detect_faces() {
 
 void Input::close() {
   if (pad_) { SDL_GameControllerClose(pad_); pad_ = nullptr; }
-  if (raw_pad_) { SDL_JoystickClose(raw_pad_); raw_pad_ = nullptr; }
-  raw_buttons_ = 0;
-  if (cv_keys_) { shmdt(const_cast<u32*>(cv_keys_)); cv_keys_ = nullptr; }
-}
-
-void Input::poll() {
-  if (cv_keys_) {
-    const u32 k = *cv_keys_, changed = k ^ cv_prev_;
-    auto cv = [&](int bit) { return (k >> bit) & 1u; };
-    auto edge = [&](int bit) { return (changed >> bit) & 1u; };
-    if (cv(0) && cv(3)) quit_ = true;
-    const B ds[] = {B::BTN_SELECT, B::BTN_START, B::BTN_UP, B::BTN_RIGHT, B::BTN_DOWN, B::BTN_LEFT,
-                    B::BTN_L, B::BTN_R, B::BTN_B, B::BTN_A, B::BTN_Y, B::BTN_X};
-    const int bits[] = {0, 3, 4, 5, 6, 7, 10, 11, 13, 14, 12, 15};
-    for (unsigned i = 0; i < sizeof(bits) / sizeof(bits[0]); ++i)
-      if (edge(bits[i])) set(ds[i], cv(bits[i]));
-    if (edge(8) && cv(8)) fire(Action::FpsToggle, true);
-    cv_prev_ = k;
-    return;
-  }
-  if (!raw_pad_) return;
-  SDL_JoystickUpdate();
-  for (int i = 0; i < SDL_JoystickNumButtons(raw_pad_); ++i) {
-    const int code = raw_button_to_sdl(i);
-    if (code < 0) continue;
-    const u32 bit = 1u << i;
-    const bool down = SDL_JoystickGetButton(raw_pad_, i) != 0;
-    if (down == ((raw_buttons_ & bit) != 0)) continue;
-    if (down) raw_buttons_ |= bit; else raw_buttons_ &= ~bit;
-    Bind b;
-    if (i == 6 || i == 7) { b.kind = Bind::PadAxis; b.code = i == 6 ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT; }
-    else { b.kind = Bind::PadButton; b.code = code; }
-    if (!pad_down(b, down)) menu_fallback_pad(b, down);
-  }
-  const int na = std::min(SDL_JoystickNumAxes(raw_pad_), static_cast<int>(SDL_CONTROLLER_AXIS_MAX));
-  for (int i = 0; i < na; ++i) axis(static_cast<Uint8>(i), SDL_JoystickGetAxis(raw_pad_, i));
 }
 
 void Input::fake_mic_frame(std::vector<s16>& out) {
@@ -1013,20 +940,7 @@ void Input::handle(const SDL_Event& e0, Display& display, Display* second) {
   case SDL_CONTROLLERAXISMOTION:
     if (e.caxis.axis < SDL_CONTROLLER_AXIS_MAX) physical_axis(e.caxis.axis, e.caxis.value);
     break;
-  case SDL_JOYBUTTONDOWN:
-  case SDL_JOYBUTTONUP: {
-    const int code = raw_button_to_sdl(e.jbutton.button);
-    if (code < 0) break;
-    Bind b;
-    if (e.jbutton.button == 6 || e.jbutton.button == 7) { b.kind = Bind::PadAxis; b.code = e.jbutton.button == 6 ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT; }
-    else { b.kind = Bind::PadButton; b.code = code; }
-    if (!pad_down(b, e.type == SDL_JOYBUTTONDOWN))
-      menu_fallback_pad(b, e.type == SDL_JOYBUTTONDOWN);
-    break;
-  }
-  case SDL_JOYAXISMOTION:
-    if (e.jaxis.axis < SDL_CONTROLLER_AXIS_MAX) axis(e.jaxis.axis, e.jaxis.value);
-    break;
+
   case SDL_CONTROLLERDEVICEADDED:
     if (!pad_) open_controllers();
     break;

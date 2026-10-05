@@ -326,7 +326,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   b.guest_len = addr - start;
   b.hot_size = size;
   b.npages = 1;
-  b.nsucc = 0;
   b.dead = false;
   u8 *h = jc.ctx->page_table.read_ptr(start);
   b.host_pages[0] = reinterpret_cast<const u8 *>(

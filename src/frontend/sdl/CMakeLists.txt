@@ -1,16 +1,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-add_executable(dsperate main.cpp config.cpp display.cpp audio.cpp input.cpp menu.cpp settings.cpp lid.cpp mic_alsa.cpp loader_cart.cpp dmaheap.cpp display_hcge.cpp
-  display_disp.cpp display_fbdev.cpp)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "mips")
-  target_sources(dsperate PRIVATE display_drm_stub.cpp)
-  target_compile_definitions(dsperate PRIVATE DSPERATE_OLD_SDL=1)
-else()
-  target_sources(dsperate PRIVATE display_drm.cpp)
+add_executable(dsperate main.cpp config.cpp display.cpp audio.cpp input.cpp pad_faces.cpp menu.cpp settings.cpp lid.cpp mic_alsa.cpp loader_cart.cpp dmaheap.cpp
+  display_drm_stub.cpp display_disp.cpp display_fbdev.cpp)
+# Required on older glibc toolchains where pthread symbols are not in libc.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(dsperate PRIVATE dsperate_core dsperate_frontend_video ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS} Threads::Threads atomic)
+# GCC < 9 requires a separate library for C++17 std::filesystem.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(dsperate PRIVATE stdc++fs)
 endif()
-target_link_libraries(dsperate PRIVATE dsperate_core ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS})
-# RetroAchievements, when it is built at all. The frontend is the only consumer;
-# with DSPERATE_CHEEVOS off the macro is undefined and main.cpp compiles as it
-# did before any of this existed.
+# Restamped on every build; its own translation unit so a commit recompiles nothing else.
+set(_ds_version_cpp ${CMAKE_CURRENT_BINARY_DIR}/version.cpp)
+add_custom_target(dsperate_version
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${_ds_version_cpp} -DDSPERATE_VERSION=${DSPERATE_VERSION} -P ${CMAKE_SOURCE_DIR}/cmake/version.cmake
+  BYPRODUCTS ${_ds_version_cpp} VERBATIM)
+target_sources(dsperate PRIVATE ${_ds_version_cpp})
+add_dependencies(dsperate dsperate_version)
 if(DSPERATE_CHEEVOS)
   target_link_libraries(dsperate PRIVATE dsperate_cheevos)
   target_compile_definitions(dsperate PRIVATE DSPERATE_CHEEVOS=1)

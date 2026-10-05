@@ -989,11 +989,12 @@ const char* extra_default(const char* key, bool pad, const ds::sdl::Config& cfg)
 
 } // namespace
 
-int main(int argc, char** argv) {
-  if (std::getenv("DS_LOG_FLUSH")) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::setvbuf(stderr, nullptr, _IONBF, 0);
-  }
+namespace {
+// RESET on a game started from the game list: main() starts the process over.
+bool g_restart = false;
+}
+
+static int run(int argc, char** argv) {
   const char* rom = nullptr;
   const char* config_arg = nullptr;
   long frame_limit = 0;
@@ -1396,11 +1397,7 @@ int main(int argc, char** argv) {
   u8& chunky = vs.chunky;
   const u32& chunky_thresh = vs.chunky_thresh;
   bool audio_on = cfg.flag("audio.enabled", true), mic_on = cfg.flag("audio.mic", true);
-#if DSPERATE_JIT_MIPS
-  const bool jit = std::getenv("DS_MIPS_JIT") && cfg.flag("emu.jit", true);
-#else
   const bool jit = cfg.flag("emu.jit", true);
-#endif
   const bool& dual_window = vs.dual_window;
   using Disp = ds::sdl::Display;
   using Menu = ds::sdl::Menu;
@@ -1426,19 +1423,28 @@ int main(int argc, char** argv) {
       SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     } else std::fprintf(stderr, "%s: this SDL2 has no headless video driver; its own driver will also open the panel\n", tier);
   };
-  if (std::getenv("DS_HCGE")) go_headless("HCGE");
-  const std::string disp_mode = cfg.str("video.disp");
-  const bool disp_auto = disp_mode.empty() || disp_mode == "auto";
-  bool& use_disp = vs.use_disp;
-  use_disp = disp_mode == "true" || disp_mode == "on";
-  if ((use_disp || disp_auto) && !dual_window) {
-    if (ds::sdl::DispOut::available()) { use_disp = true; go_headless("video.disp"); }
-    else if (use_disp) {
-      std::fprintf(stderr, "video.disp: /dev/disp not usable; using SDL\n");
-      use_disp = false;
-    }
-  } else use_disp = false;
-  if (use_disp && chunky != 0 && chunky != 2) {
+  // Where frames go (frontend/video/select.h). The panel-owning sinks are
+  // decided here, before SDL_Init, since they point SDL at a headless driver.
+  {
+    ds::frontend::BootProbe probe;
+    probe.sink = cfg.str("video.sink");
+    probe.disp = cfg.str("video.disp");
+    probe.fbdev = cfg.str("video.fbdev");
+    probe.dual_window = dual_window;
+    if (const char* vd = std::getenv("SDL_VIDEODRIVER")) probe.sdl_videodriver = vd;
+    for (int i = 0; i < SDL_GetNumVideoDrivers(); ++i) if (!std::strcmp(SDL_GetVideoDriver(i), "mali")) probe.sdl_has_mali = true;
+    probe.display_env = std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY");
+    probe.has_dri = ::access("/dev/dri", F_OK) == 0;
+    probe.disp_ok = !dual_window && ds::sdl::DispOut::available();
+    probe.fb0_ok = !dual_window && ds::sdl::FbdevOut::available();
+    const ds::frontend::BootPlan plan = ds::frontend::plan_boot(probe);
+    for (const std::string& n : plan.notes) std::fprintf(stderr, "%s\n", n.c_str());
+    vs.panel_sink = plan.panel;
+    vs.want_sink = plan.want;
+    if (plan.unset_videodriver) unsetenv("SDL_VIDEODRIVER");
+    if (plan.headless_driver) go_headless(plan.panel == ds::frontend::Sink::Disp ? "video.sink disp" : "video.sink fbdev");
+  }
+  if (vs.panel_sink == ds::frontend::Sink::Disp && chunky != 0 && chunky != 2) {
     std::fprintf(stderr, "chunky %s: the display-engine tier draws chunky cells in the scaler as their mean; using mean\n", cfg.str("video.chunky").c_str());
     chunky = 2;
   }
@@ -1451,17 +1457,17 @@ int main(int argc, char** argv) {
     vs.gpu_present = g == "rga" || g == "vulkan" || g == "true" || g == "auto" || g == "on" || g == "1";
   }
 
-  u32 init = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
+  u32 init = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER;
   if (audio_on || mic_on) init |= SDL_INIT_AUDIO;
   // Prefer SDL's native pipewire backend over Pulse (more daemon/wakeup cost).
   const std::string audio_driver = cfg.str("audio.driver", "pipewire");
   const bool driver_forced = std::getenv("SDL_AUDIODRIVER") != nullptr;
   if ((init & SDL_INIT_AUDIO) && !driver_forced && !audio_driver.empty()) setenv("SDL_AUDIODRIVER", audio_driver.c_str(), 1);
-  if (std::getenv("DS_HCGE_DIAG")) {
-    std::fprintf(stderr, "startup: SDL_Init begin flags=%08x video=%s jit=%d\n", init,
-                 std::getenv("SDL_VIDEODRIVER") ? std::getenv("SDL_VIDEODRIVER") : "auto", jit);
-    std::fflush(stderr);
-  }
+#ifdef SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS
+  // Pad a/b/x/y are positions (south/east/west/north) everywhere: bindings
+  // and the menu's pips assume it. SDL2 otherwise uses labels on Nintendo pads.
+  SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
+#endif
   if (SDL_Init(init) != 0) {
     if ((init & SDL_INIT_AUDIO) && !driver_forced && !audio_driver.empty()) {
       unsetenv("SDL_AUDIODRIVER");
@@ -1472,10 +1478,6 @@ int main(int argc, char** argv) {
     audio_on = mic_on = false;   // no audio subsystem: run silent
   }
 sdl_ready:
-  if (std::getenv("DS_HCGE_DIAG")) {
-    std::fprintf(stderr, "startup: SDL_Init complete; opening displays\n");
-    std::fflush(stderr);
-  }
 
   ds::sdl::Display display;
   ds::sdl::Display display2;   // dual-window: the lower panel's window
@@ -1616,7 +1618,6 @@ sdl_ready:
     while (!done) {
       SDL_Event e;
       while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
-      input.poll();
       if (input.quit() || g_signalled || ((input.take_menu_presses() >> ds::io::Io::Button::BTN_B) & 1)) cancel = true;
       const Uint32 now = SDL_GetTicks();
       const u64 p = progress.load();
@@ -3205,7 +3206,6 @@ sdl_ready:
     SDL_Event e;
     input.set_menu_open(menu.open());
     while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
-    input.poll();
     for (ds::sdl::Action a : input.take_actions()) {
       using A = ds::sdl::Action;
       switch (a) {

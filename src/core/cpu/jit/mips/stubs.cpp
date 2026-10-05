@@ -40,5 +40,6 @@ void emit_stubs(Runtime& rt) {
 }
 void write_entry_redirect(u8* entry,u32 key,const u8* dispatch){MipsEmitter e(entry,ENTRY_PATCH);e.lui(SCRATCH0,key>>16);e.j(reinterpret_cast<uintptr_t>(dispatch));e.ori(SCRATCH0,SCRATCH0,key);}
 void patch_link(u8* site,const u8* target){MipsEmitter::patch(site,0x08000000u|((reinterpret_cast<uintptr_t>(target)>>2)&0x03ffffff));}
+bool fastmem_capable(){return false;}
 u32 relative_branch_class(u32 w){return (w&0xfc000000u)==0x08000000u?1:0;}
 }
