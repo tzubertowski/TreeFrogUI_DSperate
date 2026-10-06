@@ -514,6 +514,15 @@ bool Input::pad_down(const Bind& b, bool down) {
   if (down && pad_mod_down_ && !(b.kind == pad_mod_.kind && b.code == pad_mod_.code)) pad_mod_used_ = true;
   auto same = [&](const Bind& x) { return x.kind == b.kind && x.code == b.code && (x.kind != Bind::PadAxis || x.neg == b.neg); };
   if (b.kind == Bind::PadButton) { if (down) held_ |= 1u << b.code; else held_ &= ~(1u << b.code); }
+  // Standalone consoles conventionally use START+SELECT as an unconditional
+  // exit chord. Keep it independent of user hotkey config so it survives
+  // stale per-device settings and never leaks either button to the game.
+  if (down && b.kind == Bind::PadButton &&
+      ((b.code == SDL_CONTROLLER_BUTTON_START && (held_ >> SDL_CONTROLLER_BUTTON_BACK & 1)) ||
+       (b.code == SDL_CONTROLLER_BUTTON_BACK && (held_ >> SDL_CONTROLLER_BUTTON_START & 1)))) {
+    quit_ = true;
+    return true;
+  }
   // Tap button and d-pad chord yield to the pad modifier: mod+<tap button>
   // can be a hotkey. A release always ends an in-progress tap or chord.
   for (int sl = 0; sl < HOT_SLOTS; ++sl) {
