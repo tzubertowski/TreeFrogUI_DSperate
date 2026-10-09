@@ -11,6 +11,9 @@
 #include <cstring>
 #include <cmath>
 #include <string>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <unistd.h>
 
 namespace ds::sdl {
 
@@ -339,6 +342,30 @@ void Input::open_controllers() {
     if (pad_) std::fprintf(stderr, "controller: %s\n", SDL_GameControllerName(pad_));
   }
   detect_faces();
+  const key_t key = ftok("/tmp/joy_key", 'a');
+  if (key != static_cast<key_t>(-1)) {
+    sf_shmid_ = shmget(key, sizeof(std::uint32_t), 0666);
+    if (sf_shmid_ >= 0) {
+      void* p = shmat(sf_shmid_, nullptr, SHM_RDONLY);
+      if (p != reinterpret_cast<void*>(-1)) { sf_keys_ = static_cast<volatile std::uint32_t*>(p); std::fprintf(stderr, "SF3000 input: joy_key attached\n"); }
+    }
+  }
+}
+
+void Input::poll_platform() {
+  if (!sf_keys_) return;
+  const std::uint32_t raw = *sf_keys_ & 0x0001FFFFu;
+  const std::uint32_t changed = raw ^ sf_prev_;
+  if (!changed) return;
+  sf_prev_ = raw;
+  const auto set_raw = [&](int bit, io::Io::Button b) {
+    if (changed & (1u << bit)) set(b, (raw >> bit) & 1u);
+  };
+  set_raw(4, B::BTN_UP); set_raw(6, B::BTN_DOWN); set_raw(7, B::BTN_LEFT); set_raw(5, B::BTN_RIGHT);
+  set_raw(13, B::BTN_A); set_raw(14, B::BTN_B); set_raw(12, B::BTN_X); set_raw(15, B::BTN_Y);
+  set_raw(10, B::BTN_L); set_raw(8, B::BTN_L); set_raw(11, B::BTN_R); set_raw(9, B::BTN_R);
+  set_raw(3, B::BTN_START); set_raw(0, B::BTN_SELECT);
+  if ((raw & (1u << 3)) && (raw & 1u)) quit_ = true;
 }
 
 void Input::detect_faces() {
@@ -351,6 +378,7 @@ void Input::detect_faces() {
 }
 
 void Input::close() {
+  if (sf_keys_) { shmdt(const_cast<std::uint32_t*>(sf_keys_)); sf_keys_ = nullptr; }
   if (pad_) { SDL_GameControllerClose(pad_); pad_ = nullptr; }
 }
 

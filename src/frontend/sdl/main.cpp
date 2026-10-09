@@ -1616,6 +1616,7 @@ sdl_ready:
     int dots = 0;
     bool shown = false;
     while (!done) {
+      input.poll_platform();
       SDL_Event e;
       while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
       if (input.quit() || g_signalled || ((input.take_menu_presses() >> ds::io::Io::Button::BTN_B) & 1)) cancel = true;
@@ -3204,6 +3205,7 @@ sdl_ready:
   while (!input.quit() && !g_signalled && (frame_limit == 0 || frames < static_cast<u64>(frame_limit))) {
     if (frames == 120) ds::place_foreign_threads();
     SDL_Event e;
+    input.poll_platform();
     input.set_menu_open(menu.open());
     while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
     for (ds::sdl::Action a : input.take_actions()) {

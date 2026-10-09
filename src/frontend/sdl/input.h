@@ -5,6 +5,7 @@
 #include "core/input/input_log.h"
 
 #include <SDL2/SDL.h>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,7 @@ public:
   static bool parse_dual_screens(const char* s, int& upper, int& lower, std::vector<TouchRoute>& routes, std::string& err);
   void set_touch_routes(std::vector<TouchRoute> r) { touch_routes_ = std::move(r); touch_cache_.clear(); }
   void open_controllers();
+  void poll_platform();
   void close();
 
   // Feeds one SDL event; `display` maps window points onto the screens. In
@@ -199,6 +201,9 @@ private:
   bool touching_ = false, touched_ = false;
   int  touch_x_ = 0, touch_y_ = 0;
   bool quit_ = false;
+  int sf_shmid_ = -1;
+  volatile std::uint32_t* sf_keys_ = nullptr;
+  std::uint32_t sf_prev_ = 0;
   bool lid_ = false, mic_key_ = false, mic_pad_ = false, ff_key_ = false, ff_pad_ = false;
   u32  noise_ = 0x2545F491;
   SDL_GameController* pad_ = nullptr;
