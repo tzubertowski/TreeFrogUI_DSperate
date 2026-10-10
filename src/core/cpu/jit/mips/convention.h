@@ -7,4 +7,5 @@ namespace ds::jit {
 // moves it to a1 before calling jit_h_lookup(cpu, key).
 constexpr u32 R_CTX=16, R_FN=25, R_RA=31, R_SP=29;
 constexpr u32 SCRATCH0=8, SCRATCH1=9, SCRATCH2=10, SCRATCH3=11;
+constexpr u32 CACHE_FIRST=17, CACHE_COUNT=6, CACHE_FRAME=56, CACHE_SAVED=24;
 }

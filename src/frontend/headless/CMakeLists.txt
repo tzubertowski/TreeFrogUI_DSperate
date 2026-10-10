@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 add_executable(dsperate-headless main.cpp)
 target_link_libraries(dsperate-headless PRIVATE dsperate_core)
+if(DSPERATE_HOST_MIPS)
+  target_link_libraries(dsperate-headless PRIVATE atomic)
+endif()
 if(DSPERATE_NET)
   target_link_libraries(dsperate-headless PRIVATE dsperate_net)
   target_compile_definitions(dsperate-headless PRIVATE DSPERATE_NET=1)

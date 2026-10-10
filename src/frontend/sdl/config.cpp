@@ -307,9 +307,9 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
                                 # 291 frames to 3-9. Known cost: one 37-80 ms frame per ~1600 on Golden
                                 # Sun, the Mali tiler-heap stall
 # vsync = true
-# fps = false                   # frames-per-second counter in a corner of the primary screen. Counts
+# fps = true                    # frames-per-second counter in a corner of the primary screen. Counts
                                 # presented frames, so frameskip and fast forward show. The fps hotkey
-                                # toggles it (unbound by default)
+                                # toggles it (on by default; L2 toggles it)
 
 [audio]
 # enabled = true

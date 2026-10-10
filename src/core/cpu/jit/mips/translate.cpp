@@ -1,4 +1,5 @@
 #include "core/cpu/arm_decode.h"
+#include "core/cpu/jit/mips/convention.h"
 #include "core/cpu/jit/jit_internal.h"
 #include "core/cpu/jit/mips/emit.h"
 #include "core/mem/timing.h"
@@ -18,6 +19,10 @@ using ds::arm::AOp;
 using ds::jit::MipsEmitter;
 constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, T0 = 8, T1 = 9, T2 = 10;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
+using ds::jit::CACHE_COUNT;
+using ds::jit::CACHE_FIRST;
+using ds::jit::CACHE_FRAME;
+using ds::jit::CACHE_SAVED;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond;
   bool im, setflags, carry_valid, carry;
@@ -91,13 +96,31 @@ static void emit_arm9_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
   e.addiu(T0, T0, -static_cast<s32>(cost));
   e.sw(T0, OB, R_CTX);
 }
-static void getr(MipsEmitter &e, u32 d, u32 r) {
+static void getr(MipsEmitter &e, u32 d, u32 r, bool cached) {
+  if (cached && r < CACHE_COUNT) {
+    e.move(d, CACHE_FIRST + r);
+    return;
+  }
   e.lw(d, OR + 4 * r, R_CTX);
   e.nop();
 }
-static void putr(MipsEmitter &e, u32 r, u32 s) {
+static void putr(MipsEmitter &e, u32 r, u32 s, bool cached) {
+  if (cached && r < CACHE_COUNT) {
+    e.move(CACHE_FIRST + r, s);
+    return;
+  }
   e.nop();
   e.sw(s, OR + 4 * r, R_CTX);
+}
+static void spill_cached(MipsEmitter &e) {
+  for (u32 r = 0; r < CACHE_COUNT; ++r)
+    e.sw(CACHE_FIRST + r, OR + 4 * r, R_CTX);
+}
+static void reload_cached(MipsEmitter &e) {
+  for (u32 r = 0; r < CACHE_COUNT; ++r) {
+    e.lw(CACHE_FIRST + r, OR + 4 * r, R_CTX);
+    e.nop();
+  }
 }
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
   const u32 page = addr >> 12;
@@ -112,12 +135,12 @@ static void note_code_dep(ds::jit::Block &b, u32 addr) {
   } else
     b.dep_overflow = true;
 }
-static void emit_n(MipsEmitter &e, const N &n) {
-  getr(e, T0, n.rn);
+static void emit_n(MipsEmitter &e, const N &n, bool cached) {
+  getr(e, T0, n.rn, cached);
   if (n.im)
     li(e, T1, n.imm);
   else {
-    getr(e, T1, n.rm);
+    getr(e, T1, n.rm, cached);
     if (n.shift) {
       if (n.shift_type == 1)
         e.srl(T1, T1, n.shift);
@@ -135,12 +158,7 @@ static void emit_n(MipsEmitter &e, const N &n) {
     e.xor_(T2, T0, T1);
     break;
   case 2:
-    // Test-only path: a-b = ~(~a+b), reusing the known-safe ADD lowering.
-    e.nor(T0, T0, 0);
-    e.nor(T1, T1, 0);
     e.subu(T2, T0, T1);
-    e.addiu(T2, T2, -1);
-    e.nor(T2, T2, 0);
     break;
   case 4:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
@@ -180,7 +198,7 @@ static void emit_n(MipsEmitter &e, const N &n) {
     }
     e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
   }
-  putr(e, n.rd, T2);
+  putr(e, n.rd, T2, cached);
 }
 struct B {
   size_t ip, kp, br;
@@ -235,11 +253,24 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   }
   if (is.empty())
     return false;
+  u32 candidates = 0;
+  for (u32 x : is) {
+    N n{};
+    if ((!native_limit || candidates < native_limit) && native(x, n, true))
+      ++candidates;
+  }
+  const bool cache_regs = candidates != 0;
   MipsEmitter e(buf, cap);
-  e.addiu(R_SP, R_SP, -24);
+  e.addiu(R_SP, R_SP, -static_cast<s32>(cache_regs ? CACHE_FRAME : 24));
   e.sw(R_CTX, 16, R_SP);
   e.sw(R_RA, 20, R_SP);
+  if (cache_regs) {
+    for (u32 r = 0; r < CACHE_COUNT; ++r)
+      e.sw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
+  }
   e.move(R_CTX, 4);
+  if (cache_regs)
+    reload_cached(e);
   std::vector<B> bs;
   std::vector<size_t> ex;
   for (u32 q = 0; q < is.size();) {
@@ -261,7 +292,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         skip = n.cond == 0 ? e.beq(T0, 0) : e.bnez(T0);
         e.nop();
       }
-      emit_n(e, n);
+      emit_n(e, n, cache_regs);
       if (skip)
         e.patch_branch(skip, e.size());
       e.lw(T0, OR + 60, R_CTX);
@@ -298,8 +329,12 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.addiu(7, 0, q - z);
     e.move(4, R_CTX);
     e.load_ptr(25, reinterpret_cast<const void *>(&ds_jit_mips_fallback_block));
+    if (cache_regs)
+      spill_cached(e);
     e.jalr(R_RA, 25);
     e.nop();
+    if (cache_regs)
+      reload_cached(e);
     x.br = e.bnez(2);
     e.nop();
     bs.push_back(std::move(x));
@@ -309,9 +344,17 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.patch_branch(p, done);
   for (B &x : bs)
     e.patch_branch(x.br, done);
+  if (cache_regs)
+    spill_cached(e);
   e.lw(R_CTX, 16, R_SP);
   e.lw(R_RA, 20, R_SP);
-  e.addiu(R_SP, R_SP, 24);
+  if (cache_regs) {
+    for (u32 r = 0; r < CACHE_COUNT; ++r) {
+      e.lw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
+      e.nop();
+    }
+  }
+  e.addiu(R_SP, R_SP, static_cast<s32>(cache_regs ? CACHE_FRAME : 24));
   e.jr(R_RA);
   e.nop();
   for (B &x : bs) {

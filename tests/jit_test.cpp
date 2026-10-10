@@ -9,6 +9,7 @@
 #include "core/cpu/timing_mode.h"
 #include "core/cpu/interp/interp.h"
 #include "core/cpu/jit/jit.h"
+#include "core/mem/bus.h"
 #include "check.h"
 
 #include <cstdio>
@@ -209,7 +210,7 @@ u16 gen_thumb(Rng& r) {
 // of budget in different places. Page at a time; a word at a time is a
 // page-table lookup per word and costs minutes a run under qemu.
 void wipe_ram(Machine& m) {
-  for (u32 a = MAIN_RAM; a < MAIN_RAM + MAIN_RAM_SIZE; a += mem::PAGE_SIZE)
+  for (u32 a = CODE_BASE; a < CODE_BASE + mem::Bus::MAIN_RAM_SIZE; a += mem::PAGE_SIZE)
     std::memset(m.host(a), 0, mem::PAGE_SIZE);
 }
 
@@ -660,31 +661,38 @@ void native_alu(int only = -1) {
   // the smallest risky form deterministically instead of depending on the
   // caller's environment (or silently testing fallback code).
   setenv("DS_MIPS_NATIVE", "1", 1);
-  setenv("DS_MIPS_NATIVE_OP", "0", 1); // AND only
   unsetenv("DS_MIPS_NATIVE_LIMIT");
-  for (Cpu which : {Cpu::ARM9, Cpu::ARM7}) {
-    if (only >= 0 && static_cast<int>(which) != only) continue;
-    Machine mi(which), mj(which);
-    CHECK(jit::attach(mj.nds, which == Cpu::ARM9, which == Cpu::ARM7));
-    Trial t{};
-    t.thumb = false;
-    t.cpsr = 0;
-    t.code.reserve(64);
-    for (u32 i = 0; i < 8; ++i) {
-      const u32 op = ops[i];
-      t.code.push_back(alu_imm(op, i & 7, (i + 1) & 7, rotates[i % 6], 0x11u + i * 0x13u));
-      t.code.push_back(alu_reg(op, (i + 2) & 7, i & 7, (i + 3) & 7));
+#if defined(__mips__)
+  const char *native_ops[] = {"0", "1", "4", "12", "13", "2"};
+#else
+  const char *native_ops[] = {"0"};
+#endif
+  for (const char *native_op : native_ops) {
+    setenv("DS_MIPS_NATIVE_OP", native_op, 1);
+    for (Cpu which : {Cpu::ARM9, Cpu::ARM7}) {
+      if (only >= 0 && static_cast<int>(which) != only) continue;
+      Machine mi(which), mj(which);
+      CHECK(jit::attach(mj.nds, which == Cpu::ARM9, which == Cpu::ARM7));
+      Trial t{};
+      t.thumb = false;
+      t.cpsr = 0;
+      t.code.reserve(64);
+      for (u32 i = 0; i < 8; ++i) {
+        const u32 op = ops[i];
+        t.code.push_back(alu_imm(op, i & 7, (i + 1) & 7, rotates[i % 6], 0x11u + i * 0x13u));
+        t.code.push_back(alu_reg(op, (i + 2) & 7, i & 7, (i + 3) & 7));
+      }
+      for (u32 i = 0; i < 24; ++i) {
+        const u32 op = ops[i & 7];
+        t.code.push_back(alu_imm(op, (i + 1) & 7, i & 7, rotates[(i + 2) % 6], 0xA5u ^ i));
+      }
+      for (int i = 0; i < 15; ++i) t.regs[i] = 0x10203040u + static_cast<u32>(i) * 0x11111111u;
+      t.regs[9] = BUF_BASE;
+      t.regs[13] = STACK;
+      t.require_halt = true;
+      CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
+      jit::detach(mj.nds);
     }
-    for (u32 i = 0; i < 24; ++i) {
-      const u32 op = ops[i & 7];
-      t.code.push_back(alu_imm(op, (i + 1) & 7, i & 7, rotates[(i + 2) % 6], 0xA5u ^ i));
-    }
-    for (int i = 0; i < 15; ++i) t.regs[i] = 0x10203040u + static_cast<u32>(i) * 0x11111111u;
-    t.regs[9] = BUF_BASE;
-    t.regs[13] = STACK;
-    t.require_halt = true;
-    CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
-    jit::detach(mj.nds);
   }
   unsetenv("DS_MIPS_NATIVE_OP");
   unsetenv("DS_MIPS_NATIVE");

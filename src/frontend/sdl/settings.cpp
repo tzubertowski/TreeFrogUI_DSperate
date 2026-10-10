@@ -123,7 +123,7 @@ const Setting kVideoSettings[] = {
           "3D EDGES: THE HARDWARE'S BLEND ON THE CPU RASTER, 4X MSAA ON THE GPU RASTER"),
   boolean("video.gpu3d", "GPU 3D", "false", FlagLive, Dep::None,
           "DRAW THE 3D LAYER ON THE GPU. NEEDS VULKAN; THE CPU DRAWS IT OTHERWISE"),
-  boolean("video.fps", "FPS COUNTER", "false", FlagLive, Dep::None,
+  boolean("video.fps", "FPS COUNTER", "true", FlagLive, Dep::None,
           "FRAMES PER SECOND IN THE CORNER OF THE SCREEN"),
   boolean("video.fullscreen", "FULLSCREEN", "false", FlagDeferred, Dep::Windowed, nullptr),
   end(),

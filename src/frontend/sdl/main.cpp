@@ -1410,13 +1410,15 @@ static int run(int argc, char** argv) {
   // Display-engine tier owns the panel: dummy/offscreen video driver keeps
   // window/events/controllers but draws nothing. Decided before SDL_Init.
   auto go_headless = [](const char* tier) {
-    if (std::getenv("SDL_VIDEODRIVER")) return;
     const char* pick = nullptr;
     for (const char* want : {"dummy", "offscreen"}) {
       for (int i = 0; i < SDL_GetNumVideoDrivers() && !pick; ++i) if (!std::strcmp(SDL_GetVideoDriver(i), want)) pick = want;
       if (pick) break;
     }
     if (pick) {
+      const char* current = std::getenv("SDL_VIDEODRIVER");
+      if (current && std::strcmp(current, pick) != 0)
+        std::fprintf(stderr, "%s: replacing SDL_VIDEODRIVER=%s with %s; panel sink owns display\n", tier, current, pick);
       setenv("SDL_VIDEODRIVER", pick, 1);
       // A headless window never has focus, and SDL drops joystick events
       // without focus; let them through since the pad is the only input.
@@ -1443,6 +1445,7 @@ static int run(int argc, char** argv) {
     vs.want_sink = plan.want;
     if (plan.unset_videodriver) unsetenv("SDL_VIDEODRIVER");
     if (plan.headless_driver) go_headless(plan.panel == ds::frontend::Sink::Disp ? "video.sink disp" : "video.sink fbdev");
+    else if (std::getenv("DS_HCGE")) go_headless("DS_HCGE output");
   }
   if (vs.panel_sink == ds::frontend::Sink::Disp && chunky != 0 && chunky != 2) {
     std::fprintf(stderr, "chunky %s: the display-engine tier draws chunky cells in the scaler as their mean; using mean\n", cfg.str("video.chunky").c_str());
@@ -1473,7 +1476,11 @@ static int run(int argc, char** argv) {
       unsetenv("SDL_AUDIODRIVER");
       if (SDL_Init(init) == 0) goto sdl_ready;
     }
-    std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+    std::fprintf(stderr, "SDL_Init: %s (SDL_VIDEODRIVER=%s; video drivers:",
+                 SDL_GetError(), std::getenv("SDL_VIDEODRIVER") ? std::getenv("SDL_VIDEODRIVER") : "unset");
+    for (int i = 0; i < SDL_GetNumVideoDrivers(); ++i)
+      std::fprintf(stderr, " %s", SDL_GetVideoDriver(i));
+    std::fprintf(stderr, ")\n");
     if (!(init & SDL_INIT_AUDIO) || SDL_Init(init & ~SDL_INIT_AUDIO) != 0) return 1;
     audio_on = mic_on = false;   // no audio subsystem: run silent
   }
@@ -1868,7 +1875,7 @@ sdl_ready:
 
   const bool show_fps = std::getenv("DS_FPS") != nullptr;
   // Same 60-frame measurement as the DS_FPS log line; holds the last value between measurements.
-  bool fps_osd = cfg.flag("video.fps", false);
+  bool fps_osd = cfg.flag("video.fps", true);
   int fps_value = 0;                        // last measured, 0..999
   Uint64 fps_mark = SDL_GetPerformanceCounter();
   Uint64 emu_ticks = 0, draw_ticks = 0, wait_ticks = 0, fps_pace_ticks = 0;   // wait: blocked in begin_frame for a free scanout buffer
