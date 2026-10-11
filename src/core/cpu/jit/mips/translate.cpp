@@ -153,7 +153,8 @@ static bool native_arm_single_multi(u32 x, ThumbMem &m) {
     return false;
   const u32 rd = static_cast<u32>(__builtin_ctz(list));
   const u32 rn = (x >> 16) & 15;
-  if (rd >= 8 || ((x & (1u << 21)) && rd == rn)) return false;
+  if (rd == 15 || (x & (1u << 22)) ||
+      ((x & (1u << 21)) && rd == rn)) return false;
   m.arm = true;
   m.cond = x >> 28;
   m.load = x & (1u << 20);

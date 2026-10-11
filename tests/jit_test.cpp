@@ -911,6 +911,7 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
   const bool a9 = which == Cpu::ARM9;
   setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
+  setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
   t.require_halt = true;
@@ -936,6 +937,16 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   CHECK(result == 3);
   std::memcpy(&result, mj.host(BUF_BASE + 4), sizeof result);
   CHECK(result == 0xA4A4A4A4u);
+
+  t = Trial{};
+  t.require_halt = true;
+  t.code = {0xE3A0E055, 0xE92D4000, 0xE3A0E000, 0xE8BD4000,
+            0xE584E000}; // push/pop {lr}, then verify the restored value
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[4] = BUF_BASE; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91007 : 71007, true));
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == 0x55u && mj.cpu.hot.regs[13] == STACK);
 
   t = Trial{};
   t.require_halt = true;
@@ -976,6 +987,7 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   }
   jit::detach(mj.nds);
   unsetenv("DS_MIPS_NATIVE_BRANCH");
+  unsetenv("DS_MIPS_NATIVE_MEM");
 }
 
 __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
