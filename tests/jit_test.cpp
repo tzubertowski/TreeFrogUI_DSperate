@@ -786,23 +786,28 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
 
   t = Trial{};
   t.require_halt = true;
-  t.code = {0xEA000001, 0xE3A00001, 0xE3A00002, 0xE3A00003,
-            0xE5890000}; // B to MOV r0,#3; store result
+  t.code = {0xEA000002, 0xE3A00001, 0xE5890004, 0xE3A00002,
+            0xE3A00003, 0xE5890000}; // B skips a visible store
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
   t.regs[9] = BUF_BASE; t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 91005 : 71005, true));
   u32 result = 0;
   std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
   CHECK(result == 3);
+  std::memcpy(&result, mj.host(BUF_BASE + 4), sizeof result);
+  CHECK(result == 0xA4A4A4A4u);
 
   t = Trial{};
   t.require_halt = true;
-  t.code = {0xEB000001, 0xE3A00001, 0xE3A00002, 0xE589E000}; // BL; store LR
+  t.code = {0xEB000002, 0xE3A00001, 0xE5890004, 0xE3A00002,
+            0xE589E000}; // BL skips a visible store; save LR
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
   t.regs[9] = BUF_BASE; t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 91006 : 71006, true));
   std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
   CHECK(result == CODE_BASE + 4);
+  std::memcpy(&result, mj.host(BUF_BASE + 4), sizeof result);
+  CHECK(result == 0xA4A4A4A4u);
 
   if (a9) {
     auto passes = [](u32 cond, u32 f) {
@@ -839,6 +844,7 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   Machine& mi = which == Cpu::ARM9 ? mi9 : mi7;
   Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
   const bool a9 = which == Cpu::ARM9;
+  setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
   t.thumb = true;
@@ -858,6 +864,37 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
         results[6] == 0x81 && results[7] == 0x81);
+  Trial branch{};
+  branch.thumb = true;
+  branch.require_halt = true;
+  branch.code = {0xE001, 0x2001, 0x6048, 0x2003, 0x6008};
+  for (int r = 0; r < 15; ++r) branch.regs[r] = 0;
+  branch.regs[1] = BUF_BASE;
+  branch.regs[13] = STACK;
+  CHECK(run_both(mi, mj, branch, a9, a9 ? 94002 : 74002, true));
+  std::memcpy(results, mj.host(BUF_BASE), 8);
+  CHECK(results[0] == 3 && results[1] == 0xA4A4A4A4u);
+  for (u32 cond = 0; cond < 14; ++cond) {
+    for (u32 flags = 0; flags < 16; ++flags) {
+      Trial conditional{};
+      conditional.thumb = true;
+      conditional.require_halt = true;
+      conditional.cpsr = flags << 28;
+      conditional.code = {0xD001u | (cond << 8), 0x2001, 0xE000, 0x2002, 0x6008};
+      for (int r = 0; r < 15; ++r) conditional.regs[r] = 0;
+      conditional.regs[1] = BUF_BASE;
+      conditional.regs[13] = STACK;
+      CHECK(run_both(mi, mj, conditional, a9,
+                     (a9 ? 94500 : 74500) + cond * 16 + flags, true));
+      std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+      const bool n = flags & 8, z = flags & 4, c = flags & 2, v = flags & 1;
+      const bool take = cond == 0 ? z : cond == 1 ? !z : cond == 2 ? c : cond == 3 ? !c :
+                        cond == 4 ? n : cond == 5 ? !n : cond == 6 ? v : cond == 7 ? !v :
+                        cond == 8 ? c && !z : cond == 9 ? !c || z : cond == 10 ? n == v :
+                        cond == 11 ? n != v : cond == 12 ? !z && n == v : z || n != v;
+      CHECK(results[0] == (take ? 2u : 1u));
+    }
+  }
   const struct { u32 instr, input, output, dst; } arithmetic[] = {
       {0x3001, 0xffffffffu, 0, 0}, {0x3001, 0x7fffffffu, 0x80000000u, 0},
       {0x3801, 0, 0xffffffffu, 0}, {0x3801, 0x80000000u, 0x7fffffffu, 0},
@@ -880,6 +917,7 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
                    result, arithmetic[i].output);
     CHECK(result == arithmetic[i].output);
   }
+  unsetenv("DS_MIPS_NATIVE_BRANCH");
   jit::detach(mj.nds);
 }
 #endif

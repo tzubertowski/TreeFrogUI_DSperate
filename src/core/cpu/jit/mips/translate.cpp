@@ -388,6 +388,10 @@ static bool local_loop_branch(u32 x, u32 pc, u32 start) {
 static bool arm_branch(u32 x) {
   return (x >> 28) != 15 && (x & 0x0e000000u) == 0x0a000000u;
 }
+static bool thumb_branch(u32 x) {
+  return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
+         (x & 0xf800u) == 0xe000u;
+}
 struct B {
   size_t ip, kp, br;
   std::vector<u32> i, k;
@@ -478,6 +482,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     reload_cached(e, cache_mask);
   std::vector<B> bs;
   std::vector<size_t> ex;
+  std::vector<size_t> bx;
   const size_t loop_head = e.size();
   for (u32 q = 0; q < is.size();) {
     const u32 pc = key_pc(ks[q]);
@@ -557,7 +562,49 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.move(R_GUEST_PC, T0);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
-      e.patch_branch(taken, e.size());
+      bx.push_back(taken);
+      ++native_count;
+      ++q;
+      continue;
+    }
+    if (use_native_branch && thumb &&
+        (!native_limit || native_count < native_limit) && thumb_branch(is[q])) {
+      note_code_dep(b, pc + 4);
+      const bool conditional = (is[q] & 0xf000u) == 0xd000u;
+      std::vector<size_t> not_taken;
+      if (conditional) emit_skip_if_false(e, (is[q] >> 8) & 15u, not_taken);
+      const s32 off = conditional ? static_cast<s8>(is[q]) * 2 :
+                                    (static_cast<s32>(is[q] << 21) >> 20);
+      const u32 target = pc + 4 + static_cast<u32>(off);
+      li(e, T0, target + 4);
+      e.move(R_GUEST_PC, T0);
+      u32 code_after = 0;
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, true, &code_after);
+      if (refill) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
+      if (arm9) {
+        li(e, T0, code_after);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        e.addiu(T0, 0, 0);
+        e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
+      } else {
+        li(e, T0, target >> 15);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        li(e, T0, target >> 24);
+        e.sw(T0, offsetof(CpuContext, code_region), R_CTX);
+      }
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      const size_t taken = e.b();
+      e.nop();
+      for (size_t p : not_taken) e.patch_branch(p, e.size());
+      if (conditional) {
+        emit_timing(e, *jc.ctx, pc, true);
+        li(e, T0, pc + 6);
+        e.move(R_GUEST_PC, T0);
+        ex.push_back(e.blez(R_BUDGET));
+        e.nop();
+      }
+      bx.push_back(taken);
       ++native_count;
       ++q;
       continue;
@@ -629,6 +676,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   if (cache_regs)
     spill_cached(e, cache_mask);
   for (size_t p : ex)
+    e.patch_branch(p, done);
+  for (size_t p : bx)
     e.patch_branch(p, done);
   for (B &x : bs)
     e.patch_branch(x.br, done);
