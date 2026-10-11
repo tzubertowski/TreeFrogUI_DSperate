@@ -930,6 +930,9 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   Machine& mi = which == Cpu::ARM9 ? mi9 : mi7;
   Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
   const bool a9 = which == Cpu::ARM9;
+  setenv("DS_MIPS_NATIVE", "1", 1);
+  setenv("DS_MIPS_NATIVE_ARM7", "1", 1);
+  setenv("DS_MIPS_NATIVE_OP", "all", 1);
   setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
   setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
@@ -951,6 +954,21 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
         results[6] == 0x81 && results[7] == 0x81);
+  for (u32 op = 0; op < 16; ++op) {
+    const u32 max_amount = (op >= 2 && op <= 4) || op == 7 ? 5 : 1;
+    for (u32 i = 0; i < max_amount; ++i) {
+      static constexpr u32 amounts[] = {0, 1, 32, 33, 255};
+      Trial alu{};
+      alu.thumb = true;
+      alu.require_halt = true;
+      alu.code = {static_cast<u16>(0x4000u | (op << 6) | (1u << 3) | 2u)};
+      alu.regs[1] = (op >= 2 && op <= 4) || op == 7 ? amounts[i] : 0xf1234567u;
+      alu.regs[2] = 0x81234567u;
+      alu.regs[13] = STACK;
+      CHECK(run_both(mi, mj, alu, a9,
+                     (a9 ? 95000 : 75000) + op * 8 + i, true));
+    }
+  }
   if (a9) {
     Trial mem{};
     mem.thumb = true;

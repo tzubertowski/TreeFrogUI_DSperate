@@ -243,11 +243,8 @@ static bool native_thumb(u32 x, N &n) {
   const bool high_mov = high_op && high_kind == 2;
   const bool high_add = high_op && high_kind == 0;
   const bool high_cmp = high_op && high_kind == 1;
-  const bool alu_reg = (h & 0xfc00) == 0x4000 &&
-      (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
-       ((h >> 6) & 15) == 5 || ((h >> 6) & 15) == 6 ||
-       ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 10 ||
-       ((h >> 6) & 15) == 11 || ((h >> 6) & 15) == 12);
+  const bool alu_reg = (h & 0xfc00) == 0x4000;
+  const u32 alu_op = (h >> 6) & 15;
   if (!mov_imm && !imm_shift && !imm8_arith && !cmp_imm8 && !imm3_arith && !alu_reg &&
       !reg3_arith && !high_mov && !high_add && !high_cmp)
     return false;
@@ -257,7 +254,7 @@ static bool native_thumb(u32 x, N &n) {
   else if (cmp_imm8) n.op = 10;
   else if (imm8_arith || imm3_arith || reg3_arith)
     n.op = (h & (imm8_arith ? 0x0800 : 0x0200)) ? 2 : 4;
-  else n.op = (h >> 6) & 15;
+  else n.op = alu_op;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
   if (op_env && std::strcmp(op_env, "all") != 0 &&
       std::strtoul(op_env, nullptr, 10) != n.op)
@@ -293,8 +290,24 @@ static bool native_thumb(u32 x, N &n) {
     n.rd = h & 7;
     n.rn = n.rd;
     n.rm = (h >> 3) & 7;
-    if (((h >> 6) & 15) == 10 || ((h >> 6) & 15) == 11)
+    if ((alu_op >= 2 && alu_op <= 4) || alu_op == 7) {
+      n.op = 13;
+      n.reg_shift = true;
+      n.shift_type = alu_op == 2 ? 0 : alu_op == 3 ? 1 : alu_op == 4 ? 2 : 3;
+      n.shift_reg = n.rm;
+      n.rm = n.rd;
+      n.carry_dynamic = n.carry_valid = true;
+    } else if (alu_op == 9) {
+      n.op = 3;
+      n.rn = n.rm;
+      n.im = true;
+      n.imm = 0;
+    } else if (alu_op == 13) {
+      n.op = 16;
+      n.rn = n.rd;
+    } else if (alu_op == 8 || alu_op == 10 || alu_op == 11) {
       n.rd = 15;
+    }
   } else if (high_mov || high_add || high_cmp) {
     n.rd = (h & 7) | ((h >> 4) & 8);
     n.rm = (h >> 3) & 15;
@@ -344,6 +357,9 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
     n.cond = x >> 28;
     return n.rd != 15;
   }
+  if (thumb && !arm9 && (static_cast<ds::u16>(x) & 0xfc00u) == 0x4000u &&
+      ((x >> 6) & 15u) == 13u)
+    return false; // shortcut: ARM7 Thumb MUL waits for magnitude-based timing and C clearing.
   return thumb ? native_thumb(x, n) : native(x, n, true);
 }
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
