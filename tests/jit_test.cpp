@@ -730,6 +730,48 @@ void native_alu(int only = -1) {
                            true));
           }
         }
+        for (u32 op : {2u, 3u, 4u, 5u, 6u, 7u, 10u, 11u}) {
+          for (u32 shift_type = 0; shift_type < 4; ++shift_type) {
+            for (u32 amount : {0u, 1u, 32u, 33u, 255u}) {
+              Trial variable_flags{};
+              variable_flags.require_halt = true;
+              variable_flags.cpsr = ((op + shift_type + amount) & 15u) << 28;
+              variable_flags.code = {
+                  alu_reg_shift(op, 0, 1, 2, 3, shift_type) | (1u << 20),
+                  0xE10F4000u, 0xE5864000u}; // MRS r4,CPSR; STR r4,[r6]
+              variable_flags.regs[1] = 0x7fffffffu;
+              variable_flags.regs[2] = 0x80000001u;
+              variable_flags.regs[3] = amount;
+              variable_flags.regs[6] = BUF_BASE;
+              variable_flags.regs[13] = STACK;
+              CHECK(run_both(mi, mj, variable_flags, which == Cpu::ARM9,
+                             (which == Cpu::ARM9 ? 98000 : 78000) + op * 256 +
+                                 shift_type * 64 + amount,
+                             true));
+            }
+          }
+        }
+        for (u32 op : {0u, 1u, 8u, 9u, 12u, 13u, 14u, 15u}) {
+          for (u32 shift_type = 0; shift_type < 4; ++shift_type) {
+            for (u32 amount : {0u, 1u, 31u, 32u, 33u, 255u}) {
+              Trial variable_flags{};
+              variable_flags.require_halt = true;
+              variable_flags.cpsr = ((op + shift_type + amount) & 15u) << 28;
+              variable_flags.code = {
+                  alu_reg_shift(op, 0, 1, 2, 3, shift_type) | (1u << 20),
+                  0xE10F4000u, 0xE5864000u}; // MRS r4,CPSR; STR r4,[r6]
+              variable_flags.regs[1] = 0x7fffffffu;
+              variable_flags.regs[2] = 0x80000001u;
+              variable_flags.regs[3] = amount;
+              variable_flags.regs[6] = BUF_BASE;
+              variable_flags.regs[13] = STACK;
+              CHECK(run_both(mi, mj, variable_flags, which == Cpu::ARM9,
+                             (which == Cpu::ARM9 ? 100000 : 80000) + op * 256 +
+                                 shift_type * 64 + amount,
+                             true));
+            }
+          }
+        }
       }
       if (std::strcmp(native_op, "all") == 0) {
         for (u32 flags = 0; flags < 16; ++flags) {

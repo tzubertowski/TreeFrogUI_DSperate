@@ -199,8 +199,6 @@ static bool native(u32 x, N &n, bool shifts) {
       n.op != 5 && n.op != 6 && n.op != 7 &&
       n.op != 10 && n.op != 11)
     return false;
-  if (a == AOp::DpRegShift && n.setflags)
-    return false; // variable-shift carry-out remains in the interpreter.
   if (a == AOp::DpImm) {
     n.im = true;
     n.imm = ai(x);
@@ -213,6 +211,9 @@ static bool native(u32 x, N &n, bool shifts) {
     n.shift_reg = (x >> 8) & 15;
     if (n.shift_reg == 15) return false;
     n.shift_type = (x >> 5) & 3;
+    n.carry_dynamic = n.setflags &&
+        (n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 || n.op >= 12);
+    n.carry_valid = n.carry_dynamic;
     return shifts;
   }
   if ((x & 0x10) || (!shifts && ((x >> 4) & 255)))
@@ -707,6 +708,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   else {
     getr(e, T1, n.rm, cache_mask);
     if (n.reg_shift) {
+      if (n.carry_dynamic) e.move(12, T1); // keep the unshifted value for carry-out
       getr(e, T3, n.shift_reg, cache_mask);
       e.andi(T3, T3, 255);
       if (n.shift_type == 0 || n.shift_type == 1) {
@@ -734,8 +736,52 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       } else {
         e.rotrv(T1, T1, T3);
       }
+      if (n.carry_dynamic) {
+        e.move(14, T3);
+        e.lw(T3, ds::jit::OFF_CPSR, R_CTX); e.nop();
+        e.srl(T3, T3, 29); e.andi(T3, T3, 1);
+        const size_t no_shift = e.beq(14, 0); e.nop();
+        std::vector<size_t> carry_done;
+        if (n.shift_type == 0 || n.shift_type == 1) {
+          li(e, 13, 32);
+          if (n.shift_type == 0) e.subu(13, 13, 14);
+          else e.addiu(13, 14, -1);
+          if (n.shift_type == 0) {
+            li(e, 13, 32); e.sltu(13, 13, 14);
+            const size_t within = e.beq(13, 0); e.nop();
+            e.move(T3, 0);
+            carry_done.push_back(e.b()); e.nop();
+            e.patch_branch(within, e.size());
+            li(e, 13, 32); e.subu(13, 13, 14);
+            e.srlv(T3, 12, 13); e.andi(T3, T3, 1);
+          } else {
+            li(e, 13, 32); e.sltu(13, 13, 14);
+            const size_t within = e.beq(13, 0); e.nop();
+            e.move(T3, 0);
+            carry_done.push_back(e.b()); e.nop();
+            e.patch_branch(within, e.size());
+            e.addiu(13, 14, -1); e.srlv(T3, 12, 13); e.andi(T3, T3, 1);
+          }
+        } else if (n.shift_type == 2) {
+          li(e, 13, 32); e.sltu(13, 14, 13);
+          const size_t small = e.bnez(13); e.nop();
+          e.srl(T3, 12, 31); e.andi(T3, T3, 1);
+          carry_done.push_back(e.b()); e.nop();
+          e.patch_branch(small, e.size());
+          e.addiu(13, 14, -1); e.srlv(T3, 12, 13); e.andi(T3, T3, 1);
+        } else {
+          e.andi(13, 14, 31);
+          const size_t rotate_zero = e.beq(13, 0); e.nop();
+          e.addiu(13, 13, -1); e.srlv(T3, 12, 13); e.andi(T3, T3, 1);
+          carry_done.push_back(e.b()); e.nop();
+          e.patch_branch(rotate_zero, e.size());
+          e.srl(T3, 12, 31); e.andi(T3, T3, 1);
+        }
+        for (size_t p : carry_done) e.patch_branch(p, e.size());
+        e.patch_branch(no_shift, e.size());
+      }
     }
-    if (n.carry_dynamic) {
+    if (n.carry_dynamic && !n.reg_shift) {
       const u32 bit = n.shift_type == 0 ? 32 - n.shift :
                       n.shift ? n.shift - 1 : 31;
       e.srl(T3, T1, bit);
