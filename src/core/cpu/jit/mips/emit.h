@@ -28,6 +28,7 @@ public:
   void lhu(u32 d,s32 o,u32 s){w(0x94000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void subu(u32 d,u32 s,u32 t){w(0x00000023u|(s<<21)|(t<<16)|(d<<11));}
   void sltu(u32 d,u32 s,u32 t){w(0x0000002bu|(s<<21)|(t<<16)|(d<<11));}
+  void sltiu(u32 d,u32 s,u32 x){w(0x2c000000u|(s<<21)|(d<<16)|(x&0xffff));}
   void and_(u32 d,u32 s,u32 t){w(0x00000024u|(s<<21)|(t<<16)|(d<<11));}
   void or_(u32 d,u32 s,u32 t){w(0x00000025u|(s<<21)|(t<<16)|(d<<11));}
   void xor_(u32 d,u32 s,u32 t){w(0x00000026u|(s<<21)|(t<<16)|(d<<11));}
@@ -44,6 +45,7 @@ public:
   void jr(u32 r){w(0x00000008u|(r<<21));} void jalr(u32 d,u32 r){w(0|(r<<21)|(d<<11)|9);}
   void nop(){w(0);}
   void j(u32 target){w(0x08000000u|((target>>2)&0x03ffffff));}
+  void jal(u32 target){w(0x0c000000u|((target>>2)&0x03ffffff));}
   size_t bnez(u32 r){size_t p=n_; w(0x14000000u|(r<<21)); return p;}
   size_t beq(u32 s,u32 t){size_t p=n_; w(0x10000000u|(s<<21)|(t<<16)); return p;}
   size_t bne(u32 s,u32 t){size_t p=n_; w(0x14000000u|(s<<21)|(t<<16)); return p;}

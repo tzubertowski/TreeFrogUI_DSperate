@@ -30,7 +30,19 @@ void emit_stubs(Runtime& rt) {
     e.jalr(R_RA,R_FN); e.nop();
     e.lw(4,16,R_SP); e.lw(R_RA,20,R_SP); e.addiu(R_SP,R_SP,24);
     e.jr(2); e.nop();
-    c.link=nullptr;c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;
+    // A static branch calls here once; jit_h_link patches its JAL to a tail J.
+    // The source block left its caller's return address in the outgoing arg area.
+    c.link=e.cur();
+    e.addiu(R_SP,R_SP,-24); e.sw(4,16,R_SP);
+    e.lw(5,0,R_RA); e.nop();
+    e.addiu(6,R_RA,-8);
+    e.load_ptr(R_FN,reinterpret_cast<const void*>(&jit_h_link));
+    e.jalr(R_RA,R_FN); e.nop();
+    e.lw(4,16,R_SP); e.nop();
+    e.lw(R_RA,36,R_SP); e.nop();
+    e.addiu(R_SP,R_SP,24);
+    e.jr(2); e.nop();
+    c.fallback=nullptr;c.branch_indirect=nullptr;c.branch_indirect_cdi=nullptr;
   }
   // Upstream runtime uses these exits when a cold lookup or full arena must
   // return to its C scheduler. MIPS enters native code with the caller's RA,

@@ -6,9 +6,11 @@ export DS_LOG_FLUSH=1
 export DS_SCANLINE_SCALE=1
 export DS_MIPS_JIT=${DS_MIPS_JIT:-1}
 export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-1}
+export DS_MIPS_NATIVE_ARM7=${DS_MIPS_NATIVE_ARM7:-1}
 export DS_MIPS_NATIVE_OP=${DS_MIPS_NATIVE_OP:-all}
 export DS_MIPS_NATIVE_BRANCH=${DS_MIPS_NATIVE_BRANCH:-1}
 export DS_MIPS_NATIVE_MEM=${DS_MIPS_NATIVE_MEM:-1}
+export DS_MIPS_NATIVE_MEM_ARM7=${DS_MIPS_NATIVE_MEM_ARM7:-0}
 export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$HOME/run.log"
@@ -27,7 +29,7 @@ fi
 echo "dsperate: resolved args=$*" >>"$HOME/run.log"
 set -- "$@" --no-mic --no-audio
 if [ "${DS_MIPS_JIT:-0}" = 1 ]; then mode=jit; else mode=interp; set -- "$@" --interp; fi
-echo "dsperate: mode=$mode native=$DS_MIPS_NATIVE op=$DS_MIPS_NATIVE_OP args=$*" >>"$HOME/run.log"
+echo "dsperate: mode=$mode native=$DS_MIPS_NATIVE arm7=$DS_MIPS_NATIVE_ARM7 op=$DS_MIPS_NATIVE_OP args=$*" >>"$HOME/run.log"
 if "$here/lib/ld.so.1" --library-path "$here/lib:/mnt/sdcard/cubegm/usr/lib:/mnt/sdcard/cubegm/lib" "$here/dsperate" "$@" >>"$here/data/run.log" 2>&1; then rc=0; else rc=$?; fi
 echo "dsperate: exit=$rc" >>"$here/data/run.log"
 exit "$rc"
