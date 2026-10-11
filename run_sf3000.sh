@@ -7,7 +7,8 @@ export DS_SCANLINE_SCALE=1
 export DS_MIPS_JIT=${DS_MIPS_JIT:-1}
 export DS_MIPS_NATIVE=${DS_MIPS_NATIVE:-1}
 export DS_MIPS_NATIVE_OP=${DS_MIPS_NATIVE_OP:-all}
-# Experimental native SUB lowering stays opt-in; it is not release-safe.
+export DS_MIPS_NATIVE_BRANCH=${DS_MIPS_NATIVE_BRANCH:-1}
+export DS_MIPS_NATIVE_MEM=${DS_MIPS_NATIVE_MEM:-1}
 export HOME="$here/data"
 mkdir -p "$HOME"
 : >"$HOME/run.log"
