@@ -968,6 +968,36 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(run_both(mi, mj, high_add, a9, a9 ? 94901 : 74901, true));
   std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
   CHECK(results[0] == 0x80000000u);
+  Trial pc_add{};
+  pc_add.thumb = true;
+  pc_add.require_halt = true;
+  pc_add.code = {0xa001, 0x6008}; // ADD r0,PC,#4; STR r0,[r1]
+  for (int r = 0; r < 15; ++r) pc_add.regs[r] = 0;
+  pc_add.regs[1] = BUF_BASE;
+  pc_add.regs[13] = STACK;
+  CHECK(run_both(mi, mj, pc_add, a9, a9 ? 94902 : 74902, true));
+  std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == CODE_BASE + 8);
+  Trial sp_add{};
+  sp_add.thumb = true;
+  sp_add.require_halt = true;
+  sp_add.code = {0xa801, 0x6008}; // ADD r0,SP,#4; STR r0,[r1]
+  for (int r = 0; r < 15; ++r) sp_add.regs[r] = 0;
+  sp_add.regs[1] = BUF_BASE;
+  sp_add.regs[13] = STACK;
+  CHECK(run_both(mi, mj, sp_add, a9, a9 ? 94903 : 74903, true));
+  std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == STACK + 4);
+  for (u32 ins : {0xb001u, 0xb081u}) {
+    Trial adjust{};
+    adjust.thumb = true;
+    adjust.require_halt = true;
+    adjust.code = {ins};
+    for (int r = 0; r < 15; ++r) adjust.regs[r] = 0;
+    adjust.regs[13] = STACK;
+    CHECK(run_both(mi, mj, adjust, a9, (a9 ? 94904 : 74904) + ins, true));
+    CHECK(mj.cpu.hot.regs[13] == (ins & 0x80 ? STACK - 4 : STACK + 4));
+  }
   for (u32 flags = 0; flags < 16; ++flags) {
     Trial high_cmp{};
     high_cmp.thumb = true;

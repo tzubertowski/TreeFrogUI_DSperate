@@ -419,6 +419,28 @@ static bool thumb_branch(u32 x) {
 }
 static bool thumb_bl_prefix(u32 x) { return (x & 0xf800u) == 0xf000u; }
 static bool thumb_bl_suffix(u32 x) { return (x & 0xf800u) == 0xf800u; }
+static bool native_thumb_special(u32 x, u32 pc, N &n) {
+  const u32 h = static_cast<ds::u16>(x);
+  if ((h & 0xf000u) == 0xa000u) {
+    n.op = (h & 0x0800u) ? 4 : 13;
+    n.rd = (h >> 8) & 7;
+    n.rn = 13;
+    n.im = true;
+    n.setflags = false;
+    n.imm = (h & 255) << 2;
+    if (!(h & 0x0800u)) n.imm += (pc + 4) & ~3u;
+    return true;
+  }
+  if ((h & 0xff00u) == 0xb000u) {
+    n.op = (h & 0x80u) ? 2 : 4;
+    n.rd = n.rn = 13;
+    n.im = true;
+    n.setflags = false;
+    n.imm = (h & 0x7f) << 2;
+    return true;
+  }
+  return false;
+}
 struct B {
   size_t ip, kp, br;
   std::vector<u32> i, k;
@@ -697,11 +719,25 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    if (use_native && thumb && (!native_limit || native_count < native_limit) &&
+        native_thumb_special(is[q], key_pc(ks[q]), n)) {
+      note_code_dep(b, key_pc(ks[q]) + 4);
+      emit_timing(e, *jc.ctx, key_pc(ks[q]), true);
+      emit_n(e, n, cache_mask);
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 2);
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      e.nop();
+      ++native_count;
+      ++q;
+      continue;
+    }
     B x{};
     u32 z = q;
     while (q < is.size() &&
            !(use_native && (!native_limit || native_count < native_limit) &&
-             native_insn(is[q], thumb, n))) {
+             (native_insn(is[q], thumb, n) ||
+              (thumb && native_thumb_special(is[q], key_pc(ks[q]), n))))) {
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
     }
