@@ -3969,6 +3969,9 @@ sdl_ready:
                    static_cast<double>(ps.wait_ns) / 1e6, static_cast<unsigned long long>(ps.long_waits));
     ds::handoff::report(stderr);
   }
+#if DSPERATE_JIT
+  if (jit && std::getenv("DS_JIT_STATS")) ds::jit::report(stderr);
+#endif
   log.close();
   ds::prof::report();
   lid.close();
