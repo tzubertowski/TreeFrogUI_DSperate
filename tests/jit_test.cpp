@@ -653,6 +653,11 @@ u32 alu_reg(u32 op, u32 rd, u32 rn, u32 rm, u32 shift_type = 0, u32 shift = 0, u
          (shift << 7) | (shift_type << 5) | rm;
 }
 
+u32 alu_reg_shift(u32 op, u32 rd, u32 rn, u32 rm, u32 rs, u32 shift_type) {
+  return (14u << 28) | (op << 21) | (rn << 16) | (rd << 12) |
+         (rs << 8) | (shift_type << 5) | 0x10u | rm;
+}
+
 #if defined(__mips__)
 void native_compare_loop(Cpu which);
 void native_thumb_smoke(Cpu which);
@@ -706,6 +711,26 @@ void native_alu(int only = -1) {
       t.regs[13] = STACK;
       t.require_halt = true;
       CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
+      if (std::strcmp(native_op, "all") == 0) {
+        for (u32 shift_type = 0; shift_type < 4; ++shift_type) {
+          for (u32 amount : {0u, 1u, 31u, 32u, 33u, 255u}) {
+            Trial variable{};
+            variable.require_halt = true;
+            variable.code = {
+                alu_reg_shift(13, 0, 0, 2, 3, shift_type), // MOV r0,r2,shift r3
+                alu_reg_shift(4, 4, 1, 2, 3, shift_type),  // ADD r4,r1,r2,shift r3
+                0xE5860000u, 0xE5864004u};
+            variable.regs[1] = 0x12345678u;
+            variable.regs[2] = 0x80000001u;
+            variable.regs[3] = amount;
+            variable.regs[6] = BUF_BASE;
+            variable.regs[13] = STACK;
+            CHECK(run_both(mi, mj, variable, which == Cpu::ARM9,
+                           (which == Cpu::ARM9 ? 96000 : 76000) + shift_type * 512 + amount,
+                           true));
+          }
+        }
+      }
       if (std::strcmp(native_op, "all") == 0) {
         for (u32 flags = 0; flags < 16; ++flags) {
           Trial pred{};

@@ -34,7 +34,7 @@ using ds::jit::CACHE_FIRST;
 using ds::jit::CACHE_FRAME;
 using ds::jit::CACHE_SAVED;
 struct N {
-  u32 op, rd, rn, rm, imm, shift, cond, rdlo;
+  u32 op, rd, rn, rm, imm, shift, cond, rdlo, shift_reg;
   bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift;
   bool signed_mul = false, accumulate = false;
   ds::u8 shift_type;
@@ -199,8 +199,8 @@ static bool native(u32 x, N &n, bool shifts) {
       n.op != 5 && n.op != 6 && n.op != 7 &&
       n.op != 10 && n.op != 11)
     return false;
-  if (a == AOp::DpRegShift && (n.op != 13 || n.setflags))
-    return false; // register-controlled shifts without flags only
+  if (a == AOp::DpRegShift && n.setflags)
+    return false; // variable-shift carry-out remains in the interpreter.
   if (a == AOp::DpImm) {
     n.im = true;
     n.imm = ai(x);
@@ -210,8 +210,8 @@ static bool native(u32 x, N &n, bool shifts) {
   }
   if (a == AOp::DpRegShift) {
     n.reg_shift = true;
-    n.rn = (x >> 8) & 15; // Rs supplies the register shift amount for MOV.
-    if (n.rn == 15) return false;
+    n.shift_reg = (x >> 8) & 15;
+    if (n.shift_reg == 15) return false;
     n.shift_type = (x >> 5) & 3;
     return shifts;
   }
@@ -589,12 +589,13 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   ex.push_back(e.blez(R_BUDGET)); e.nop();
   // Dynamic timing tables mean a timing update can affect any page used here.
 }
-static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb) {
+static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
+                        bool internal = false) {
   u32 cost;
   if (c.which == ds::Cpu::ARM9)
     cost = arm9_code_cost(c, pc, thumb);
   else {
-    cost = c.timing7[pc >> 15][thumb ? 1 : 3];
+    cost = c.timing7[pc >> 15][thumb ? (internal ? 0 : 1) : (internal ? 2 : 3)];
   }
   e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(cost));
 }
@@ -706,7 +707,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   else {
     getr(e, T1, n.rm, cache_mask);
     if (n.reg_shift) {
-      getr(e, T3, n.rn, cache_mask);
+      getr(e, T3, n.shift_reg, cache_mask);
       e.andi(T3, T3, 255);
       if (n.shift_type == 0 || n.shift_type == 1) {
         if (n.shift_type == 0) e.sllv(T1, T1, T3);
@@ -1051,6 +1052,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
     if ((n.op != 13 || n.reg_shift) && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
       if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
+      if (n.reg_shift && n.shift_reg < CACHE_COUNT) cache_mask |= 1u << n.shift_reg;
       if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11 && n.rd < CACHE_COUNT)
         cache_mask |= 1u << n.rd;
       if (n.op == 17 && n.rdlo < CACHE_COUNT) cache_mask |= 1u << n.rdlo;
@@ -1403,7 +1405,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
                      n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + (thumb ? 4 : 8));
-      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb);
+      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb, n.reg_shift);
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
