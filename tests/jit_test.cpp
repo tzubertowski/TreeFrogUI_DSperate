@@ -965,6 +965,17 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     t.code = {thumb_pc, 0xDF00, 0x46C0};
     CHECK(run_both(mi, mj, t, a9, a9 ? 91028 : 71028, true));
   }
+  t = Trial{};
+  t.thumb = true; t.require_halt = true;
+  t.regs[14] = HALT_STUB; t.code = {0x4770}; // BX lr.
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91032 : 71032, true));
+  if (a9) {
+    t = Trial{};
+    t.thumb = true; t.require_halt = true;
+    t.regs[0] = HALT_STUB; t.code = {0x4780}; // BLX r0.
+    CHECK(run_both(mi, mj, t, true, 91033, true));
+    CHECK(mj.cpu.hot.regs[14] == CODE_BASE + 3);
+  }
   if (std::getenv("DS_MIPS_PC_ONLY")) {
     jit::detach(mj.nds);
     return;
