@@ -221,12 +221,11 @@ static bool native(u32 x, N &n, bool shifts) {
   n.im = false;
   n.shift = (x >> 7) & 31;
   n.shift_type = (x >> 5) & 3;
-  if (n.setflags && n.shift_type == 3 && !n.shift)
-    return false; // RRX needs old C in the shifted value; leave it in interpreter.
   n.carry_dynamic = n.setflags && (n.shift || n.shift_type);
   n.carry_valid = n.carry_dynamic;
   return n.shift_type == 0 ||
          (!n.shift && (n.shift_type == 1 || n.shift_type == 2)) ||
+         (!n.shift && n.shift_type == 3) ||
          (n.shift && n.shift_type == 3) ||
          (n.shift && (n.shift_type == 1 || n.shift_type == 2));
 }
@@ -800,6 +799,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     }
     if (n.carry_dynamic && !n.reg_shift) {
       const u32 bit = n.shift_type == 0 ? 32 - n.shift :
+                      n.shift_type == 3 && !n.shift ? 0 :
                       n.shift ? n.shift - 1 : 31;
       e.srl(T3, T1, bit);
       e.andi(T3, T3, 1);
@@ -818,6 +818,10 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
         e.addiu(T1, 0, 0); // LSR #32
       } else if (n.shift_type == 2) {
         e.sra(T1, T1, 31); // ASR #32
+      } else if (n.shift_type == 3) {
+        e.lw(T2, ds::jit::OFF_CPSR, R_CTX); e.nop();
+        e.srl(T2, T2, 29); e.andi(T2, T2, 1); e.sll(T2, T2, 31);
+        e.srl(T1, T1, 1); e.or_(T1, T1, T2);
       }
     }
   }

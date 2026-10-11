@@ -712,6 +712,18 @@ void native_alu(int only = -1) {
       t.require_halt = true;
       CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
       if (std::strcmp(native_op, "all") == 0) {
+        for (u32 carry : {0u, 1u}) {
+          Trial rrx{};
+          rrx.require_halt = true;
+          rrx.cpsr = carry << 29;
+          rrx.code = {alu_reg(13, 0, 0, 1, 3, 0) | (1u << 20),
+                      0xE10F2000u, 0xE5860000u, 0xE5862004u};
+          rrx.regs[1] = 0x80000003u;
+          rrx.regs[6] = BUF_BASE;
+          rrx.regs[13] = STACK;
+          CHECK(run_both(mi, mj, rrx, which == Cpu::ARM9,
+                         (which == Cpu::ARM9 ? 101000 : 81000) + carry, true));
+        }
         static constexpr u32 mul_rhs[] = {
             0u, 0x7fu, 0xffffff80u, 0x100u, 0xffffu,
             0x10000u, 0x01000000u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
