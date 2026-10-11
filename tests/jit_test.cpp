@@ -973,6 +973,25 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
 
   t = Trial{};
   t.require_halt = true;
+  t.spsr = 0x12345678u; t.regs[1] = BUF_BASE; t.regs[4] = 0xa5b6c7d8u;
+  t.regs[13] = STACK;
+  t.code = {0xE321F013, 0xE169F004, 0xE14F0000, 0xE5810000};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91017 : 71017, true));
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == (t.regs[4] & 0xff0000ffu));
+
+  t = Trial{};
+  t.require_halt = true;
+  t.spsr = 0x12345678u; t.regs[1] = BUF_BASE; t.regs[4] = 0xa5b6c7d8u;
+  t.regs[13] = STACK;
+  t.code = {0xE321F010, 0xE169F004, 0xE14F0000, 0xE5810000,
+            0xE7F000F0}; // User mode ignores SPSR writes; undefined trap exits.
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91018 : 71018, true));
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == t.spsr);
+
+  t = Trial{};
+  t.require_halt = true;
   t.code = {0xE3A0E055, 0xE92D4000, 0xE3A0E000, 0xE8BD4000,
             0xE584E000}; // push/pop {lr}, then verify the restored value
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
