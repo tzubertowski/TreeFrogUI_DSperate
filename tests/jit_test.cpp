@@ -948,6 +948,59 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
   CHECK(result == 0x55u && mj.cpu.hot.regs[13] == STACK);
 
+  if (a9) {
+    t = Trial{};
+    t.require_halt = true;
+    t.code = {0xE894000F, 0xE5850000, 0xE5851004, 0xE5852008, 0xE585300C};
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+    t.regs[4] = BUF_BASE + 0x100; t.regs[5] = BUF_BASE; t.regs[13] = STACK;
+    CHECK(run_both(mi, mj, t, true, 91008, true)); // LDMIA {r0-r3}
+
+    t = Trial{};
+    t.require_halt = true;
+    t.code = {0xE924000F}; // STMDB r4!, {r0-r3}
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0x12340000u + i;
+    t.regs[4] = BUF_BASE + 0x240; t.regs[13] = STACK;
+    CHECK(run_both(mi, mj, t, true, 91009, true));
+    CHECK(mj.cpu.hot.regs[4] == BUF_BASE + 0x230);
+
+    t = Trial{};
+    t.require_halt = true;
+    t.cpsr = 0x80000000u; // LT: exercise the hottest profiled STMIA instruction.
+    t.code = {0xB8A101FD}; // STMIALT r1!, {r0,r2-r8}
+    t.code_base = 0x020367B4;
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0xA5A50000u + i;
+    t.regs[1] = BUF_BASE + 0x400; t.regs[13] = STACK;
+    CHECK(run_both(mi, mj, t, true, 91012, true));
+    CHECK(mj.cpu.hot.regs[1] == BUF_BASE + 0x420);
+
+    t = Trial{};
+    t.require_halt = true;
+    t.code = {0x0894000F}; // LDMIAEQ; Z is clear, so the transfer is skipped.
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+    t.regs[4] = BUF_BASE + 0x100; t.regs[13] = STACK;
+    CHECK(run_both(mi, mj, t, true, 91010, true));
+
+    t = Trial{};
+    t.require_halt = true;
+    t.code = {0xE8940003}; // Crossing the 2 KiB mapping page must take fallback.
+    for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+    t.regs[4] = BUF_BASE + 0x7fc; t.regs[13] = STACK;
+    CHECK(run_both(mi, mj, t, true, 91011, true));
+
+    for (u32 mode = 0; mode < 16; ++mode) {
+      t = Trial{};
+      t.require_halt = true;
+      const u32 list = (mode & 1) ? 0x4105u : 0x7a25u;
+      t.code = {0xE8000000u | ((mode & 1) << 24) | ((mode & 2) << 22) |
+                ((mode & 4) << 19) | ((mode & 8) << 17) | 0x00040000u | list};
+      for (int i = 0; i < 15; ++i) t.regs[i] = 0x76540000u + 0x101u * i;
+      t.regs[4] = BUF_BASE + 0x600; t.regs[13] = STACK;
+      if (mode & 1) t.cpsr = (mode & 2) ? 0x40000000u : 0x80000000u;
+      CHECK(run_both(mi, mj, t, true, 91100 + mode, true));
+    }
+  }
+
   t = Trial{};
   t.require_halt = true;
   t.code = {0xEB000002, 0xE3A00001, 0xE5890004, 0xE3A00002,

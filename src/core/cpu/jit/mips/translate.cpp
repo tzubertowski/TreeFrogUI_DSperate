@@ -13,6 +13,7 @@
 
 extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext *, const ds::u32 *,
                                               const ds::u32 *, ds::u32);
+extern "C" ds::u32 jit_h_fallback(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_ld8(ds::CpuContext *, ds::u32);
 extern "C" ds::u32 jit_h_ld16(ds::CpuContext *, ds::u32);
 extern "C" ds::u32 jit_h_ld32(ds::CpuContext *, ds::u32);
@@ -166,6 +167,14 @@ static bool native_arm_single_multi(u32 x, ThumbMem &m) {
   m.post = !(x & (1u << 24));
   m.writeback = x & (1u << 21);
   return true;
+}
+static bool native_arm_block(u32 x) {
+  const AOp op = ds::arm::decode_arm(x);
+  const u32 list = x & 0xffffu;
+  const u32 rn = (x >> 16) & 15;
+  return (op == AOp::Ldm || op == AOp::Stm) && __builtin_popcount(list) > 1 &&
+         (x >> 28) != 15 && !(x & (1u << 22)) && rn != 15 &&
+         !(list & (1u << 15)) && !(list & (1u << rn));
 }
 static int arm7_data_slot(const CpuContext &c, u32 pc, bool thumb,
                           u32 width, bool load) {
@@ -636,7 +645,108 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   // Dynamic timing tables mean a timing update can affect any page used here.
 }
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
-                        bool internal = false) {
+                        bool internal = false);
+static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
+                               u32 instr, u32 cache_mask,
+                               std::vector<size_t> &ex) {
+  const u32 list = instr & 0xffffu, rn = (instr >> 16) & 15;
+  const u32 n = __builtin_popcount(list);
+  const bool load = (instr & (1u << 20)) != 0;
+  const bool up = (instr & (1u << 23)) != 0;
+  const bool pre = (instr & (1u << 24)) != 0;
+  const bool writeback = (instr & (1u << 21)) != 0;
+  std::vector<size_t> not_executed, slow, done;
+  emit_skip_if_false(e, instr >> 28, not_executed);
+
+  getr(e, T0, rn, cache_mask);
+  if (up) e.addiu(R_FP, T0, pre ? 4 : 0);
+  else e.addiu(R_FP, T0, static_cast<s32>(pre ? -static_cast<int>(n * 4) : -static_cast<int>(n * 4 - 4)));
+  e.srl(R_FP, R_FP, 2); e.sll(R_FP, R_FP, 2);
+  e.addiu(T1, R_FP, static_cast<s32>(n * 4 - 1));
+  e.xor_(T1, T1, R_FP); e.srl(T1, T1, 11);
+  slow.push_back(e.bnez(T1)); e.nop();
+  e.srl(T1, R_FP, 11); e.sll(T1, T1, 2);
+  e.load_ptr(T3, c.page_table.raw()); e.addu(T3, T3, T1);
+  e.lw(T1, 0, T3); e.nop();
+  e.sll(T2, T1, 2);
+  slow.push_back(e.beq(T2, 0)); e.nop();
+  e.srl(T3, T1, 30);
+  if (load) e.andi(T3, T3, 1);
+  slow.push_back(e.bnez(T3)); e.nop();
+  e.addu(T2, T2, R_FP);
+
+  if (writeback) {
+    if (up) e.addiu(T3, T0, n * 4);
+    else e.addiu(T3, T0, -static_cast<s32>(n * 4));
+    e.sw(T3, 52, R_SP);
+  }
+
+  // Aggregate N+S data timing before the transfer; the ARM9 charges one CD/CDI.
+  e.move(T0, 0);
+  e.lw(T3, offsetof(CpuContext, timing9), R_CTX); e.nop();
+  u32 k = 0;
+  for (u32 r = 0; r < 15; ++r) {
+    if (!(list & (1u << r))) continue;
+    if (k) e.addiu(T1, R_FP, static_cast<s32>(k * 4));
+    else e.move(T1, R_FP);
+    e.srl(T1, T1, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
+    e.lbu(T1, (load ? 0 : 4) + (k ? 3 : 2), T1); e.nop();
+    e.addu(T0, T0, T1);
+    ++k;
+  }
+  const u32 nc = arm9_code_cost(c, pc, false);
+  if (nc >= 6) {
+    e.sltiu(T1, T0, 6);
+    const size_t short_data = e.bnez(T1); e.nop();
+    e.addiu(T0, T0, static_cast<s32>(nc - 6));
+    const size_t combined = e.b(); e.nop();
+    e.patch_branch(short_data, e.size());
+    li(e, T0, nc);
+    e.patch_branch(combined, e.size());
+  } else {
+    if (nc) e.addiu(T1, 0, nc); else e.move(T1, 0);
+    e.sltu(T3, T1, T0);
+    e.subu(T3, 0, T3);
+    e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
+  }
+  e.subu(R_BUDGET, R_BUDGET, T0);
+
+  for (u32 r = 0, off = 0; r < 15; ++r) {
+    if (!(list & (1u << r))) continue;
+    if (load) {
+      e.lw(T1, off, T2); e.nop(); putr(e, r, T1, cache_mask);
+    } else {
+      getr(e, T1, r, cache_mask); e.sw(T1, off, T2);
+    }
+    off += 4;
+  }
+  if (writeback) { e.lw(T3, 52, R_SP); e.nop(); putr(e, rn, T3, cache_mask); }
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  done.push_back(e.b()); e.nop();
+
+  const size_t slow_at = e.size();
+  for (size_t p : slow) e.patch_branch(p, slow_at);
+  e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, false));
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
+  spill_cached(e, cache_mask);
+  e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+  e.jalr(R_RA, 25); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  reload_cached(e, cache_mask);
+  ex.push_back(e.b()); e.nop();
+
+  const size_t not_exec_at = e.size();
+  for (size_t p : not_executed) e.patch_branch(p, not_exec_at);
+  emit_timing(e, c, pc, false);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  const size_t end = e.size();
+  for (size_t p : done) e.patch_branch(p, end);
+}
+static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
+                        bool internal) {
   u32 cost;
   if (c.which == ds::Cpu::ARM9)
     cost = arm9_code_cost(c, pc, thumb);
@@ -1494,6 +1604,16 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    if (use_native_mem && arm9 && !thumb &&
+        (!native_limit || native_count < native_limit) && native_arm_block(is[q])) {
+      note_code_dep(b, pc + 8);
+      b.dep_overflow = true;
+      emit_arm_block_mem(e, *jc.ctx, pc, is[q], cache_mask, ex);
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     ThumbMem mem{};
     bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
                              native_arm_mem(is[q], pc, mem);
@@ -1651,6 +1771,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
+        if (arm9 && !thumb && native_arm_block(is[i])) return true;
         ThumbMem m{};
         bool candidate = thumb ? native_thumb_mem(is[i], m) :
             native_arm_mem(is[i], key_pc(ks[i]), m);
