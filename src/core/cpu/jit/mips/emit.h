@@ -33,6 +33,7 @@ public:
   void xor_(u32 d,u32 s,u32 t){w(0x00000026u|(s<<21)|(t<<16)|(d<<11));}
   void nor(u32 d,u32 s,u32 t){w(0x00000027u|(s<<21)|(t<<16)|(d<<11));}
   void multu(u32 s,u32 t){w(0x00000019u|(s<<21)|(t<<16));}
+  void mult(u32 s,u32 t){w(0x00000018u|(s<<21)|(t<<16));}
   void mflo(u32 d){w(0x00000012u|(d<<11));}
   void mfhi(u32 d){w(0x00000010u|(d<<11));}
   void move(u32 d,u32 s){addu(d,s,0);}

@@ -1028,6 +1028,55 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, umull, true, 94018, true));
     std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 2);
     CHECK(results[0] == 0x23456780u && results[1] == 1u);
+    const struct { u32 lhs, rhs, lo, hi; } signed_products[] = {
+        {0xffffffffu, 2u, 0xfffffffeu, 0xffffffffu},
+        {0x80000000u, 0x80000000u, 0u, 0x40000000u},
+        {0x7fffffffu, 2u, 0xfffffffeu, 0u},
+        {0x80000000u, 2u, 0u, 0xffffffffu},
+    };
+    for (u32 i = 0; i < sizeof signed_products / sizeof signed_products[0]; ++i) {
+      for (u32 form = 0; form < 2; ++form) {
+        Trial t{};
+        t.require_halt = true;
+        t.code = {form ? 0xe0c01392u : 0xe0c10092u,
+                  form ? 0xe5851000u : 0xe5850000u,
+                  form ? 0xe5850004u : 0xe5851004u};
+        t.regs[0] = form ? 0x11111111u : signed_products[i].lhs;
+        t.regs[1] = form ? 0x22222222u : 0;
+        t.regs[2] = signed_products[i].rhs;
+        t.regs[3] = form ? signed_products[i].lhs : 0;
+        t.regs[5] = BUF_BASE;
+        t.regs[13] = STACK;
+        CHECK(run_both(mi, mj, t, true, 94030 + i * 2 + form, true));
+        std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 2);
+        CHECK(results[0] == signed_products[i].lo && results[1] == signed_products[i].hi);
+      }
+    }
+    static constexpr u32 long_mul[] = {
+        0xE0912394u, 0xE0B12394u, 0xE0D12394u, 0xE0F12394u
+    }; // UMULLS, UMLALS, SMULLS, SMLALS r2,r1,r4,r3
+    static constexpr u32 long_mul_hi[] = {1u, 0x80000001u, 0xffffffffu, 0x7fffffffu};
+    static constexpr u32 long_mul_lo[] = {0xfffffffeu, 0xfffffffdu,
+                                          0xfffffffeu, 0xfffffffdu};
+    static constexpr u32 long_mul_flags[] = {0x30000000u, 0xb0000000u,
+                                             0xb0000000u, 0x30000000u};
+    for (u32 i = 0; i < 4; ++i) {
+      Trial t{};
+      t.require_halt = true;
+      t.cpsr = 0xf0000000u;
+      t.code = {long_mul[i], 0xE5852000u, 0xE5851004u,
+                0xE10F6000u, 0xE5856008u};
+      t.regs[1] = 0x7fffffffu;
+      t.regs[2] = 0xffffffffu;
+      t.regs[3] = 0xffffffffu;
+      t.regs[4] = 2u;
+      t.regs[5] = BUF_BASE;
+      t.regs[13] = STACK;
+      CHECK(run_both(mi, mj, t, true, 94020 + i, true));
+      std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 3);
+      CHECK(results[0] == long_mul_lo[i] && results[1] == long_mul_hi[i]);
+      CHECK((results[2] & 0xf0000000u) == long_mul_flags[i]);
+    }
     Trial mvn_zero{};
     mvn_zero.require_halt = true;
     mvn_zero.code = {0xE3E00000, 0xE5810000}; // MVN r0,#0; STR r0,[r1]
