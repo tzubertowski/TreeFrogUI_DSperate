@@ -122,6 +122,13 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m) {
   }
   return true;
 }
+static int arm7_data_slot(const CpuContext &c, u32 pc, bool thumb,
+                          u32 width, bool load) {
+  const u32 nc = c.timing7[pc >> 15][thumb ? 0 : 2];
+  const int ni = c.nds->bus.timing().nc7_index(nc);
+  return ni < 0 ? -1 : static_cast<int>(ds::mem::Timing::cost7_offset(
+      (pc >> 24) == 2, load, static_cast<u32>(ni), width == 4));
+}
 static u32 ai(u32 x) {
   u32 v = x & 255, n = ((x >> 8) & 15) * 2;
   return n ? (v >> n) | (v << (32 - n)) : v;
@@ -368,13 +375,29 @@ static void emit_arm9_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
   }
   e.subu(R_BUDGET, R_BUDGET, T2);
 }
+static void emit_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
+                            bool thumb, u32 width, bool store, int slot7) {
+  if (c.which == ds::Cpu::ARM9) {
+    emit_arm9_data_extra(e, c, pc, thumb, width, store);
+    return;
+  }
+  const u32 seq = c.timing7[pc >> 15][thumb ? 1 : 3];
+  e.lw(T2, offsetof(CpuContext, cost7), R_CTX);
+  e.srl(T3, R_FP, 15);
+  e.sll(T3, T3, 5);
+  e.addu(T2, T2, T3);
+  e.lbu(T2, slot7, T2);
+  e.nop();
+  if (seq) e.addiu(T2, T2, -static_cast<s32>(seq));
+  e.subu(R_BUDGET, R_BUDGET, T2);
+}
 static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask);
 static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask);
 static void spill_cached(MipsEmitter &e, u32 cache_mask);
 static void reload_cached(MipsEmitter &e, u32 cache_mask);
 static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                            bool thumb, const ThumbMem &m, u32 cache_mask,
-                           std::vector<size_t> &ex) {
+                           std::vector<size_t> &ex, int slot7) {
   // The direct path is deliberately ARM9-only. Tagged/MMIO/write-protected
   // pages retain the existing helper semantics, including SMC and device IO.
   if (m.base_const) li(e, T0, m.base);
@@ -484,7 +507,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   reload_cached(e, cache_mask);
   loaded();
   writeback();
-  emit_arm9_data_extra(e, c, pc, thumb, m.width, !m.load);
+  emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
   e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
   ex.push_back(e.blez(R_BUDGET)); e.nop();
   // Slow operations may have raised scheduler alerts; return at this boundary.
@@ -492,7 +515,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.patch_branch(fast_done, e.size());
   loaded();
   writeback();
-  emit_arm9_data_extra(e, c, pc, thumb, m.width, !m.load);
+  emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
   e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
   ex.push_back(e.blez(R_BUDGET)); e.nop();
   // Dynamic timing tables mean a timing update can affect any page used here.
@@ -868,8 +891,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   const char *branch_env = std::getenv("DS_MIPS_NATIVE_BRANCH");
   const bool use_native_branch = use_native && branch_env && std::strcmp(branch_env, "0");
   const char *mem_env = std::getenv("DS_MIPS_NATIVE_MEM");
-  const bool use_native_mem = use_native && arm9 && mem_env &&
-                              std::strcmp(mem_env, "0");
+  const bool use_native_mem = use_native && mem_env && std::strcmp(mem_env, "0");
   const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
   const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
   const bool native_trace = std::getenv("DS_MIPS_NATIVE_TRACE") &&
@@ -910,8 +932,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         cache_mask |= 1u << n.rd;
     }
     ThumbMem m{};
-    const bool mem_candidate = thumb ? native_thumb_mem(x, m) :
-                                      native_arm_mem(x, key_pc(ks[i]), m);
+    bool mem_candidate = thumb ? native_thumb_mem(x, m) :
+                                native_arm_mem(x, key_pc(ks[i]), m);
+    if (mem_candidate && !arm9)
+      mem_candidate = arm7_data_slot(*jc.ctx, key_pc(ks[i]), thumb,
+                                     m.width, m.load) >= 0;
     if (use_native_mem && (!native_limit || candidates < native_limit) && mem_candidate) {
       ++candidates;
       if (m.rn < CACHE_COUNT) cache_mask |= 1u << m.rn;
@@ -1110,15 +1135,18 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     ThumbMem mem{};
-    const bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
-                                   native_arm_mem(is[q], pc, mem);
+    bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
+                             native_arm_mem(is[q], pc, mem);
+    const int slot7 = native_mem && !arm9 ?
+        arm7_data_slot(*jc.ctx, pc, thumb, mem.width, mem.load) : -1;
+    if (!arm9 && slot7 < 0) native_mem = false;
     if (use_native_mem && (!native_limit || native_count < native_limit) && native_mem) {
       note_code_dep(b, pc + (thumb ? 4 : 8));
       b.dep_overflow = true; // the access-time row can vary with the guest address
       emit_timing(e, *jc.ctx, pc, thumb);
       std::vector<size_t> pred_skip;
       if (!thumb) emit_skip_if_false(e, mem.cond, pred_skip);
-      emit_thumb_mem(e, *jc.ctx, pc, thumb, mem, cache_mask, ex);
+      emit_thumb_mem(e, *jc.ctx, pc, thumb, mem, cache_mask, ex, slot7);
       if (!thumb && !pred_skip.empty()) {
         const size_t executed = e.b(); e.nop();
         for (size_t p : pred_skip) e.patch_branch(p, e.size());

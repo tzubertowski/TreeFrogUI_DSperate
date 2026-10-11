@@ -864,7 +864,7 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
   const bool a9 = which == Cpu::ARM9;
   setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
-  if (a9) setenv("DS_MIPS_NATIVE_MEM", "1", 1);
+  setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
   t.thumb = true;
@@ -967,6 +967,27 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(arm_memory_results[0] == 0x66u);
     CHECK(arm_memory_results[1] == 0x66u);
     CHECK(arm_memory_results[2] == BUF_BASE + 4); // post-index base writeback
+  } else {
+    Trial arm7_mem{};
+    arm7_mem.require_halt = true;
+    arm7_mem.code = {0xE3A0005A, 0xE5810000, 0xE5912000, 0xE5812004};
+    for (int r = 0; r < 15; ++r) arm7_mem.regs[r] = 0;
+    arm7_mem.regs[1] = BUF_BASE;
+    arm7_mem.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arm7_mem, false, 74004, true));
+    u32 arm7_words[2]{};
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof arm7_words);
+    CHECK(arm7_words[0] == 0x5Au && arm7_words[1] == 0x5Au);
+    Trial arm7_thumb_mem{};
+    arm7_thumb_mem.thumb = true;
+    arm7_thumb_mem.require_halt = true;
+    arm7_thumb_mem.code = {0x205A, 0x6008, 0x680A, 0x604A};
+    for (int r = 0; r < 15; ++r) arm7_thumb_mem.regs[r] = 0;
+    arm7_thumb_mem.regs[1] = BUF_BASE;
+    arm7_thumb_mem.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arm7_thumb_mem, false, 74005, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof arm7_words);
+    CHECK(arm7_words[0] == 0x5Au && arm7_words[1] == 0x5Au);
   }
   Trial branch{};
   branch.thumb = true;
