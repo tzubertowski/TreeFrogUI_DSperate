@@ -968,11 +968,13 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
 
   t = Trial{};
   t.require_halt = true;
-  t.code = {0xE129F001, 0xE1A0D004, 0xE129F002}; // Mode switch takes interpreter fallback.
+  t.code = {0xE129F001, 0xE1A0D004, 0xE129F002,
+            0xE129F001, 0xE1A0500D, 0xE129F002}; // Switch banks, write IRQ SP, then read it back.
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
   t.regs[1] = 0x12; t.regs[2] = 0x1f; t.regs[4] = 0x12345678;
   t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 91014 : 71014, true));
+  CHECK(mi.cpu.hot.regs[5] == 0x12345678 && mj.cpu.hot.regs[5] == 0x12345678);
 
   t = Trial{};
   t.require_halt = true;

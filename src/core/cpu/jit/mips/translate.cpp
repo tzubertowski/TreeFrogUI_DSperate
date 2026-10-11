@@ -22,6 +22,7 @@ extern "C" void jit_h_st16(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" void jit_h_st32(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_mips_indirect_branch(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_mips_exc_return(ds::CpuContext *, ds::u32);
+extern "C" void jit_h_mips_set_cpsr(ds::CpuContext *, ds::u32);
 namespace {
 using ds::CpuContext;
 using ds::s32;
@@ -860,8 +861,10 @@ static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
 
   const size_t slow_at = e.size();
   for (size_t p : changed_mode) e.patch_branch(p, slow_at);
-  e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, false));
-  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
+  emit_timing(e, c, pc, false);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  e.move(4, R_CTX); e.move(5, T1);
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_set_cpsr));
   spill_cached(e, cache_mask);
   e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
