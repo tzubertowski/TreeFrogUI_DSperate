@@ -643,14 +643,20 @@ void directed(u32 start = 0, u32 limit = ~0u) {
   std::printf("jit directed: %u cases ok\n", done);
 }
 
-u32 alu_imm(u32 op, u32 rd, u32 rn, u32 rotate, u32 imm8) {
-  return 0xE0000000u | (1u << 25) | (op << 21) | (rn << 16) | (rd << 12) |
-         (rotate << 8) | imm8;
+u32 alu_imm(u32 op, u32 rd, u32 rn, u32 rotate, u32 imm8, u32 cond = 14, bool setflags = false) {
+  return (cond << 28) | (1u << 25) | (op << 21) | (setflags << 20) |
+         (rn << 16) | (rd << 12) | (rotate << 8) | imm8;
 }
 
-u32 alu_reg(u32 op, u32 rd, u32 rn, u32 rm) {
-  return 0xE0000000u | (op << 21) | (rn << 16) | (rd << 12) | rm;
+u32 alu_reg(u32 op, u32 rd, u32 rn, u32 rm, u32 shift_type = 0, u32 shift = 0, u32 cond = 14) {
+  return (cond << 28) | (op << 21) | (rn << 16) | (rd << 12) |
+         (shift << 7) | (shift_type << 5) | rm;
 }
+
+#if defined(__mips__)
+void native_compare_loop(Cpu which);
+void native_thumb_smoke(Cpu which);
+#endif
 
 void native_alu(int only = -1) {
   // Unconditional, non-S, non-PC ARM ALU forms: each immediate rotate edge
@@ -661,9 +667,10 @@ void native_alu(int only = -1) {
   // the smallest risky form deterministically instead of depending on the
   // caller's environment (or silently testing fallback code).
   setenv("DS_MIPS_NATIVE", "1", 1);
+  setenv("DS_MIPS_NATIVE_ARM7", "1", 1);
   unsetenv("DS_MIPS_NATIVE_LIMIT");
 #if defined(__mips__)
-  const char *native_ops[] = {"0", "1", "4", "12", "13", "2"};
+  const char *native_ops[] = {"0", "1", "4", "8", "9", "12", "13", "2", "all"};
 #else
   const char *native_ops[] = {"0"};
 #endif
@@ -686,18 +693,121 @@ void native_alu(int only = -1) {
         const u32 op = ops[i & 7];
         t.code.push_back(alu_imm(op, (i + 1) & 7, i & 7, rotates[(i + 2) % 6], 0xA5u ^ i));
       }
+      for (u32 shift : {1u, 7u, 15u, 31u})
+        t.code.push_back(alu_reg(0, 0, 1, 2, 3, shift)); // ROR (not RRX)
+      t.code.push_back(alu_reg(0, 0, 1, 2) | (1u << 20)); // ANDS, preserve C/V
+      t.code.push_back(alu_reg(1, 2, 3, 4) | (1u << 20)); // EORS
+      t.code.push_back(alu_reg(12, 3, 4, 5) | (1u << 20)); // ORRS
+      t.code.push_back(alu_reg(13, 4, 0, 5) | (1u << 20)); // MOVS
+      t.code.push_back(alu_imm(0, 0, 1, 4, 0x81, 14, true)); // rotated immediate sets C
+      t.code.push_back(alu_imm(12, 1, 2, 0, 0, 14, true)); // zero immediate preserves C
       for (int i = 0; i < 15; ++i) t.regs[i] = 0x10203040u + static_cast<u32>(i) * 0x11111111u;
       t.regs[9] = BUF_BASE;
       t.regs[13] = STACK;
       t.require_halt = true;
       CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
+      if (std::strcmp(native_op, "all") == 0) {
+        for (u32 flags = 0; flags < 16; ++flags) {
+          Trial pred{};
+          pred.require_halt = true;
+          pred.cpsr = flags << 28;
+          for (u32 cond = 0; cond < 14; ++cond)
+            pred.code.push_back(alu_imm(13, cond, 0, 0, 0x80 + cond, cond));
+          for (int i = 0; i < 15; ++i) pred.regs[i] = 0x10203040u + static_cast<u32>(i);
+          pred.regs[9] = BUF_BASE;
+          pred.regs[13] = STACK;
+          CHECK(run_both(mi, mj, pred, which == Cpu::ARM9,
+                         (which == Cpu::ARM9 ? 92000 : 72000) + flags, true));
+        }
+        for (u32 op : {0u, 1u, 8u, 9u, 12u, 13u}) {
+          for (u32 form = 0; form < 3; ++form) {
+            for (u32 flags = 0; flags < 16; ++flags) {
+              Trial flag_case{};
+              flag_case.require_halt = true;
+              flag_case.cpsr = flags << 28;
+              if (form == 0)
+                flag_case.code = {alu_reg(op, 0, 1, 2) | (1u << 20)};
+              else
+                flag_case.code = {alu_imm(op, 0, 1, form == 1 ? 4 : 8,
+                                          form == 1 ? 0x81 : 0x7f, 14, true)};
+              for (int i = 0; i < 15; ++i) flag_case.regs[i] = 0x10203040u + static_cast<u32>(i);
+              flag_case.regs[1] = flags & 1 ? 0x80000000u : 0x7fffffffu;
+              flag_case.regs[2] = flags & 2 ? 0xffffffffu : 0x80000000u;
+              flag_case.regs[9] = BUF_BASE;
+              flag_case.regs[13] = STACK;
+              CHECK(run_both(mi, mj, flag_case, which == Cpu::ARM9,
+                             (which == Cpu::ARM9 ? 93000 : 73000) + op * 48 + form * 16 + flags, true));
+            }
+          }
+        }
+      }
       jit::detach(mj.nds);
     }
   }
+#if defined(__mips__)
+  if (only != static_cast<int>(Cpu::ARM7)) {
+    setenv("DS_MIPS_NATIVE_OP", "all", 1);
+    native_compare_loop(Cpu::ARM9);
+  }
+  if (only != static_cast<int>(Cpu::ARM9)) {
+    setenv("DS_MIPS_NATIVE_OP", "all", 1);
+    native_compare_loop(Cpu::ARM7);
+  }
+  setenv("DS_MIPS_NATIVE_OP", "all", 1);
+  if (only != static_cast<int>(Cpu::ARM7)) native_thumb_smoke(Cpu::ARM9);
+  if (only != static_cast<int>(Cpu::ARM9)) native_thumb_smoke(Cpu::ARM7);
+#endif
   unsetenv("DS_MIPS_NATIVE_OP");
   unsetenv("DS_MIPS_NATIVE");
+  unsetenv("DS_MIPS_NATIVE_ARM7");
   std::puts("jit native ALU: immediate+register forms ok");
 }
+
+#if defined(__mips__)
+__attribute__((noinline)) void native_compare_loop(Cpu which) {
+  static Machine mi9(Cpu::ARM9), mj9(Cpu::ARM9);
+  static Machine mi7(Cpu::ARM7), mj7(Cpu::ARM7);
+  Machine& mi = which == Cpu::ARM9 ? mi9 : mi7;
+  Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
+  const bool a9 = which == Cpu::ARM9;
+  setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
+  CHECK(jit::attach(mj.nds, a9, !a9));
+  Trial t{};
+  t.require_halt = true;
+  t.code = {alu_reg(10, 0, 0, 1) | (1u << 20),
+            alu_imm(4, 0, 0, 0, 1, 3), 0x3AFFFFFC,
+            0xE1A02000}; // CMP; ADDCC; BCC loop; MOV r2,r0
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[1] = 5;
+  t.regs[9] = BUF_BASE;
+  t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91002 : 71002, true));
+  CHECK(mj.cpu.hot.regs[2] == 5);
+  jit::detach(mj.nds);
+  unsetenv("DS_MIPS_NATIVE_BRANCH");
+}
+
+__attribute__((noinline)) void native_thumb_smoke(Cpu which) {
+  static Machine mi9(Cpu::ARM9), mj9(Cpu::ARM9);
+  static Machine mi7(Cpu::ARM7), mj7(Cpu::ARM7);
+  Machine& mi = which == Cpu::ARM9 ? mi9 : mi7;
+  Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
+  const bool a9 = which == Cpu::ARM9;
+  CHECK(jit::attach(mj.nds, a9, !a9));
+  Trial t{};
+  t.thumb = true;
+  t.require_halt = true;
+  t.code = {0x2001, 0x3002, 0x6030, 0x46C0}; // MOVS; ADDS; STR r0,[r6]; NOP
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[6] = BUF_BASE;
+  t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 94001 : 74001, true));
+  u32 result = 0;
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == 3);
+  jit::detach(mj.nds);
+}
+#endif
 
 void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
   const bool a9 = which == Cpu::ARM9;

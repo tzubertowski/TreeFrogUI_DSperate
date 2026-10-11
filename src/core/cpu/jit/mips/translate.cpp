@@ -1,4 +1,5 @@
 #include "core/cpu/arm_decode.h"
+#include "core/cpu/cpu_cycles.h"
 #include "core/cpu/jit/mips/convention.h"
 #include "core/cpu/jit/jit_internal.h"
 #include "core/cpu/jit/mips/emit.h"
@@ -17,7 +18,8 @@ using ds::s32;
 using ds::u32;
 using ds::arm::AOp;
 using ds::jit::MipsEmitter;
-constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, T0 = 8, T1 = 9, T2 = 10;
+constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, R_BUDGET = 23;
+constexpr u32 T0 = 8, T1 = 9, T2 = 10, R_GUEST_PC = 24;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
 using ds::jit::CACHE_COUNT;
 using ds::jit::CACHE_FIRST;
@@ -35,13 +37,13 @@ static u32 ai(u32 x) {
 static bool native(u32 x, N &n, bool shifts) {
   AOp a = ds::arm::decode_arm(x);
   n.cond = x >> 28;
-  if (n.cond != 14 || (a != AOp::DpImm && a != AOp::DpImmShift))
+  if (n.cond == 15 || (a != AOp::DpImm && a != AOp::DpImmShift))
     return false;
   n.op = (x >> 21) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
   const bool force_sub = op_env && std::strtoul(op_env, nullptr, 10) == 2;
-  // "all" enables the individually audited flagless ALU subset; a numeric
-  // value keeps the single-op canary useful on hardware with a flaky opcode.
+  // "all" enables audited ALU forms; a numeric value keeps one-op canaries
+  // available for hardware where a particular generated opcode is suspect.
   if (op_env && std::strcmp(op_env, "all") != 0 &&
       n.op != static_cast<u32>(std::strtoul(op_env, nullptr, 10)))
     return false;
@@ -53,13 +55,18 @@ static bool native(u32 x, N &n, bool shifts) {
   // rm==15 here silently routed valid immediate ALU instructions to fallback.
   if (n.rd == 15 || n.rn == 15 || (a != AOp::DpImm && n.rm == 15))
     return false;
-  // Hardware-proven set. BIC/MVN (14/15) remain interpreter fallbacks: their
-  // complemented operand forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 12 && n.op != 13 &&
+  // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
+  // forms were the repeatable source of SF3000 crashes.
+  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 8 && n.op != 9 &&
+      n.op != 12 && n.op != 13 &&
       !(force_sub && n.op == 2))
     return false;
-  // Keep CPSR updates in the interpreter until the hardware path is proven.
-  if (n.setflags)
+  const bool test_op = n.op == 8 || n.op == 9;
+  const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
+                             n.op == 12 || n.op == 13;
+  if (test_op && !n.setflags)
+    return false;
+  if (n.setflags && !logical_flags)
     return false;
   if (a == AOp::DpImm) {
     n.im = true;
@@ -73,8 +80,57 @@ static bool native(u32 x, N &n, bool shifts) {
   n.im = false;
   n.shift = (x >> 7) & 31;
   n.shift_type = (x >> 5) & 3;
+  if (n.setflags && (n.shift || n.shift_type))
+    return false;
   return n.shift_type == 0 ||
+         (n.shift && n.shift_type == 3) ||
          (n.shift && (n.shift_type == 1 || n.shift_type == 2));
+}
+static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
+  if (cond == 14) return;
+  e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
+  e.nop();
+  auto flag = [&](u32 bit) { e.srl(T1, T0, bit); e.andi(T1, T1, 1); };
+  auto fail_beq = [&](u32 a, u32 b) { skip.push_back(e.beq(a, b)); e.nop(); };
+  auto fail_bne = [&](u32 a, u32 b) { skip.push_back(e.bne(a, b)); e.nop(); };
+  auto fail_bnez = [&](u32 a) { skip.push_back(e.bnez(a)); e.nop(); };
+  auto fail_beqz = [&](u32 a) { fail_beq(a, 0); };
+  auto nv_equal = [&] {
+    e.srl(T1, T0, 31); e.andi(T1, T1, 1);
+    e.srl(T2, T0, 28); e.andi(T2, T2, 1);
+  };
+  switch (cond) {
+  case 0: flag(30); fail_beqz(T1); break; // EQ
+  case 1: flag(30); fail_bnez(T1); break;
+  case 2: flag(29); fail_beqz(T1); break; // CS
+  case 3: flag(29); fail_bnez(T1); break;
+  case 4: flag(31); fail_beqz(T1); break; // MI
+  case 5: flag(31); fail_bnez(T1); break;
+  case 6: flag(28); fail_beqz(T1); break; // VS
+  case 7: flag(28); fail_bnez(T1); break;
+  case 8: flag(29); fail_beqz(T1); flag(30); fail_bnez(T1); break; // HI
+  case 9: {
+    flag(29);
+    const size_t c_clear = e.beq(T1, 0);
+    e.nop();
+    flag(30);
+    fail_beqz(T1);
+    e.patch_branch(c_clear, e.size());
+    break;
+  } // LS
+  case 10: nv_equal(); fail_bne(T1, T2); break; // GE
+  case 11: nv_equal(); fail_beq(T1, T2); break;
+  case 12: flag(30); fail_bnez(T1); nv_equal(); fail_bne(T1, T2); break; // GT
+  case 13: {
+    flag(30);
+    const size_t z_set = e.bnez(T1);
+    e.nop();
+    nv_equal();
+    fail_beq(T1, T2);
+    e.patch_branch(z_set, e.size());
+    break;
+  }
+  }
 }
 static void li(MipsEmitter &e, u32 r, u32 v) {
   if (v < 0x8000u) {
@@ -84,40 +140,39 @@ static void li(MipsEmitter &e, u32 r, u32 v) {
   e.lui(r, v >> 16);
   e.ori(r, r, v);
 }
-static void emit_arm9_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
-  const ds::u8 t = c.timing9[(pc + 8) >> 12][0];
-  const u32 cost = t == 255 ? (!((pc + 8) & 31u) ? 3 : 1) : t;
-  li(e, T0, pc + 8);
-  e.sw(T0, OR + 60, R_CTX);
-  e.lw(T0, OB, R_CTX);
-  // Some SF3000 MIPS revisions do not reliably interlock generated
-  // load/use pairs. Keep the native path conservative.
-  e.nop();
-  e.addiu(T0, T0, -static_cast<s32>(cost));
-  e.sw(T0, OB, R_CTX);
+static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
+  u32 cost;
+  if (c.which == ds::Cpu::ARM9) {
+    const ds::u8 t = c.timing9[(pc + 8) >> 12][0];
+    cost = t == 255 ? (!((pc + 8) & 31u) ? 3 : 1) : t;
+  } else {
+    cost = c.timing7[pc >> 15][3];
+  }
+  e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(cost));
 }
-static void getr(MipsEmitter &e, u32 d, u32 r, bool cached) {
-  if (cached && r < CACHE_COUNT) {
+static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask) {
+  if (r < CACHE_COUNT && (cache_mask & (1u << r))) {
     e.move(d, CACHE_FIRST + r);
     return;
   }
   e.lw(d, OR + 4 * r, R_CTX);
   e.nop();
 }
-static void putr(MipsEmitter &e, u32 r, u32 s, bool cached) {
-  if (cached && r < CACHE_COUNT) {
+static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask) {
+  if (r < CACHE_COUNT && (cache_mask & (1u << r))) {
     e.move(CACHE_FIRST + r, s);
     return;
   }
   e.nop();
   e.sw(s, OR + 4 * r, R_CTX);
 }
-static void spill_cached(MipsEmitter &e) {
+static void spill_cached(MipsEmitter &e, u32 cache_mask) {
   for (u32 r = 0; r < CACHE_COUNT; ++r)
-    e.sw(CACHE_FIRST + r, OR + 4 * r, R_CTX);
+    if (cache_mask & (1u << r)) e.sw(CACHE_FIRST + r, OR + 4 * r, R_CTX);
 }
-static void reload_cached(MipsEmitter &e) {
+static void reload_cached(MipsEmitter &e, u32 cache_mask) {
   for (u32 r = 0; r < CACHE_COUNT; ++r) {
+    if (!(cache_mask & (1u << r))) continue;
     e.lw(CACHE_FIRST + r, OR + 4 * r, R_CTX);
     e.nop();
   }
@@ -135,17 +190,19 @@ static void note_code_dep(ds::jit::Block &b, u32 addr) {
   } else
     b.dep_overflow = true;
 }
-static void emit_n(MipsEmitter &e, const N &n, bool cached) {
-  getr(e, T0, n.rn, cached);
+static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
+  if (n.op != 13) getr(e, T0, n.rn, cache_mask);
   if (n.im)
     li(e, T1, n.imm);
   else {
-    getr(e, T1, n.rm, cached);
+    getr(e, T1, n.rm, cache_mask);
     if (n.shift) {
       if (n.shift_type == 1)
         e.srl(T1, T1, n.shift);
       else if (n.shift_type == 2)
         e.sra(T1, T1, n.shift);
+      else if (n.shift_type == 3)
+        e.rotr(T1, T1, n.shift);
       else
         e.sll(T1, T1, n.shift);
     }
@@ -166,6 +223,12 @@ static void emit_n(MipsEmitter &e, const N &n, bool cached) {
     e.nor(T1, T1, 0);
     e.subu(T2, T0, T1);
     e.addiu(T2, T2, -1);
+    break;
+  case 8:
+    e.and_(T2, T0, T1);
+    break;
+  case 9:
+    e.xor_(T2, T0, T1);
     break;
   case 12:
     e.or_(T2, T0, T1);
@@ -198,7 +261,13 @@ static void emit_n(MipsEmitter &e, const N &n, bool cached) {
     }
     e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
   }
-  putr(e, n.rd, T2, cached);
+  if (n.op != 8 && n.op != 9) putr(e, n.rd, T2, cache_mask);
+}
+static bool local_loop_branch(u32 x, u32 pc, u32 start) {
+  if ((x & 0x0e000000u) != 0x0a000000u || (x & (1u << 24)))
+    return false;
+  const s32 off = static_cast<s32>(x << 8) >> 6;
+  return pc + 8 + static_cast<u32>(off) == start;
 }
 struct B {
   size_t ip, kp, br;
@@ -225,7 +294,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     return false;
   const bool arm9 = jc.ctx->which == ds::Cpu::ARM9;
   const char *native_env = std::getenv("DS_MIPS_NATIVE");
-  const bool use_native = arm9 && native_env && std::strcmp(native_env, "0");
+  const char *native_arm7_env = std::getenv("DS_MIPS_NATIVE_ARM7");
+  const bool use_native = native_env && std::strcmp(native_env, "0") &&
+                          (arm9 || (native_arm7_env && std::strcmp(native_arm7_env, "0")));
+  const char *branch_env = std::getenv("DS_MIPS_NATIVE_BRANCH");
+  const bool use_native_branch = use_native && branch_env && std::strcmp(branch_env, "0");
   const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
   const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
   const bool native_trace = std::getenv("DS_MIPS_NATIVE_TRACE") &&
@@ -253,29 +326,83 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   }
   if (is.empty())
     return false;
-  u32 candidates = 0;
+  u32 candidates = 0, cache_mask = 0;
   for (u32 x : is) {
     N n{};
-    if ((!native_limit || candidates < native_limit) && native(x, n, true))
+    if (use_native && !thumb && (!native_limit || candidates < native_limit) &&
+        native(x, n, true)) {
       ++candidates;
+      if (n.op != 13 && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
+      if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
+      if (n.op != 8 && n.op != 9 && n.rd < CACHE_COUNT)
+        cache_mask |= 1u << n.rd;
+    }
   }
-  const bool cache_regs = candidates != 0;
+  const bool cache_regs = cache_mask != 0;
+  const bool has_native = use_native;
   MipsEmitter e(buf, cap);
-  e.addiu(R_SP, R_SP, -static_cast<s32>(cache_regs ? CACHE_FRAME : 24));
+  e.addiu(R_SP, R_SP, -static_cast<s32>(has_native ? CACHE_FRAME : 24));
   e.sw(R_CTX, 16, R_SP);
   e.sw(R_RA, 20, R_SP);
+  if (has_native) e.sw(R_BUDGET, 48, R_SP);
   if (cache_regs) {
     for (u32 r = 0; r < CACHE_COUNT; ++r)
-      e.sw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
+      if (cache_mask & (1u << r)) e.sw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
   }
   e.move(R_CTX, 4);
+  if (has_native) {
+    e.lw(R_BUDGET, OB, R_CTX);
+    e.nop();
+    li(e, R_GUEST_PC, start + 8);
+  }
   if (cache_regs)
-    reload_cached(e);
+    reload_cached(e, cache_mask);
   std::vector<B> bs;
   std::vector<size_t> ex;
+  const size_t loop_head = e.size();
   for (u32 q = 0; q < is.size();) {
+    const u32 pc = key_pc(ks[q]);
+    if (use_native_branch && !thumb && (!native_limit || native_count < native_limit) &&
+        local_loop_branch(is[q], pc, start)) {
+      note_code_dep(b, pc + 8);
+      std::vector<size_t> not_taken;
+      emit_skip_if_false(e, is[q] >> 28, not_taken);
+      li(e, T0, start + 8);
+      e.move(R_GUEST_PC, T0);
+      const u32 target = start;
+      u32 code_after = 0;
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, false, &code_after);
+      if (refill) {
+        e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
+      }
+      if (arm9) {
+        li(e, T0, code_after);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        e.addiu(T0, 0, 0);
+        e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
+      } else {
+        li(e, T0, target >> 15);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        li(e, T0, target >> 24);
+        e.sw(T0, offsetof(CpuContext, code_region), R_CTX);
+      }
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      const size_t loop = e.b();
+      e.nop();
+      e.patch_branch(loop, loop_head);
+      for (size_t p : not_taken) e.patch_branch(p, e.size());
+      li(e, T0, pc + 12);
+      e.move(R_GUEST_PC, T0);
+      emit_timing(e, *jc.ctx, pc);
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      ++native_count;
+      ++q;
+      continue;
+    }
     N n{};
-    if (use_native && (!native_limit || native_count < native_limit) &&
+    if (!thumb && use_native && (!native_limit || native_count < native_limit) &&
         native(is[q], n, true)) {
       if (native_trace)
         std::fprintf(stderr,
@@ -283,27 +410,15 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
                      n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + 8);
-      emit_arm9_timing(e, *jc.ctx, key_pc(ks[q]));
-      size_t skip = 0;
-      if (n.cond != 14) {
-        e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
-        e.srl(T0, T0, 30);
-        e.andi(T0, T0, 1);
-        skip = n.cond == 0 ? e.beq(T0, 0) : e.bnez(T0);
-        e.nop();
-      }
-      emit_n(e, n, cache_regs);
-      if (skip)
-        e.patch_branch(skip, e.size());
-      e.lw(T0, OR + 60, R_CTX);
-      e.nop();
-      e.addiu(T0, T0, 4);
-      e.sw(T0, OR + 60, R_CTX);
-      e.lw(T0, OB, R_CTX);
-      e.nop();
+      emit_timing(e, *jc.ctx, key_pc(ks[q]));
+      std::vector<size_t> skip;
+      emit_skip_if_false(e, n.cond, skip);
+      emit_n(e, n, cache_mask);
+      for (size_t p : skip) e.patch_branch(p, e.size());
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
       // Native timing must leave at the same boundary as the interpreter:
       // budget exhaustion at exactly zero is already out of budget.
-      ex.push_back(e.blez(T0));
+      ex.push_back(e.blez(R_BUDGET));
       e.nop();
       // 74Kc/XBurst can mis-handle back-to-back generated load/store groups.
       // Keep a real instruction boundary between native guest operations.
@@ -315,7 +430,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     B x{};
     u32 z = q;
     while (q < is.size() &&
-           !(use_native && (!native_limit || native_count < native_limit) &&
+           !(!thumb && use_native && (!native_limit || native_count < native_limit) &&
              native(is[q], n, true))) {
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
@@ -330,31 +445,43 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.move(4, R_CTX);
     e.load_ptr(25, reinterpret_cast<const void *>(&ds_jit_mips_fallback_block));
     if (cache_regs)
-      spill_cached(e);
+      spill_cached(e, cache_mask);
+    if (has_native) e.sw(R_GUEST_PC, OR + 60, R_CTX);
+    if (has_native) e.sw(R_BUDGET, OB, R_CTX);
     e.jalr(R_RA, 25);
     e.nop();
+    if (has_native) {
+      e.lw(R_BUDGET, OB, R_CTX);
+      e.nop();
+      e.lw(R_GUEST_PC, OR + 60, R_CTX);
+      e.nop();
+    }
     if (cache_regs)
-      reload_cached(e);
+      reload_cached(e, cache_mask);
     x.br = e.bnez(2);
     e.nop();
     bs.push_back(std::move(x));
   }
   const size_t done = e.size();
+  if (has_native) e.sw(R_GUEST_PC, OR + 60, R_CTX);
+  if (has_native) e.sw(R_BUDGET, OB, R_CTX);
+  if (cache_regs)
+    spill_cached(e, cache_mask);
   for (size_t p : ex)
     e.patch_branch(p, done);
   for (B &x : bs)
     e.patch_branch(x.br, done);
-  if (cache_regs)
-    spill_cached(e);
   e.lw(R_CTX, 16, R_SP);
   e.lw(R_RA, 20, R_SP);
+  if (has_native) e.lw(R_BUDGET, 48, R_SP);
   if (cache_regs) {
     for (u32 r = 0; r < CACHE_COUNT; ++r) {
+      if (!(cache_mask & (1u << r))) continue;
       e.lw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
       e.nop();
     }
   }
-  e.addiu(R_SP, R_SP, static_cast<s32>(cache_regs ? CACHE_FRAME : 24));
+  e.addiu(R_SP, R_SP, static_cast<s32>(has_native ? CACHE_FRAME : 24));
   e.jr(R_RA);
   e.nop();
   for (B &x : bs) {
