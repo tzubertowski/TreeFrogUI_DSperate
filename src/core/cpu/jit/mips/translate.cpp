@@ -41,7 +41,6 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   n.op = (x >> 21) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
-  const bool force_sub = op_env && std::strtoul(op_env, nullptr, 10) == 2;
   // "all" enables audited ALU forms; a numeric value keeps one-op canaries
   // available for hardware where a particular generated opcode is suspect.
   if (op_env && std::strcmp(op_env, "all") != 0 &&
@@ -58,14 +57,14 @@ static bool native(u32 x, N &n, bool shifts) {
   // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
   // forms were the repeatable source of SF3000 crashes.
   if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 8 && n.op != 9 &&
-      n.op != 12 && n.op != 13 && !(force_sub && n.op == 2))
+      n.op != 12 && n.op != 13 && n.op != 2)
     return false;
   const bool test_op = n.op == 8 || n.op == 9;
   const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
                              n.op == 12 || n.op == 13;
   if (test_op && !n.setflags)
     return false;
-  if (n.setflags && !logical_flags)
+  if (n.setflags && !logical_flags && n.op != 2 && n.op != 4)
     return false;
   if (a == AOp::DpImm) {
     n.im = true;
@@ -336,7 +335,8 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       }
       e.xor_(13, T0, T2);
       e.and_(12, 12, 13);
-      e.srl(12, 12, 3);
+      e.srl(12, 12, 31);
+      e.sll(12, 12, 28);
       e.or_(T3, T3, 12);
       e.lw(T1, ds::jit::OFF_CPSR, R_CTX);
       e.nop();

@@ -719,7 +719,7 @@ void native_alu(int only = -1) {
           CHECK(run_both(mi, mj, pred, which == Cpu::ARM9,
                          (which == Cpu::ARM9 ? 92000 : 72000) + flags, true));
         }
-        for (u32 op : {0u, 1u, 8u, 9u, 12u, 13u}) {
+        for (u32 op : {0u, 1u, 2u, 4u, 8u, 9u, 12u, 13u}) {
           for (u32 form = 0; form < 3; ++form) {
             for (u32 flags = 0; flags < 16; ++flags) {
               Trial flag_case{};
