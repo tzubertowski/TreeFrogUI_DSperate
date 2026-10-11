@@ -187,11 +187,15 @@ static bool native_arm_block(u32 x) {
 }
 static bool native_thumb_block(u32 x, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
-  if ((h & 0xfe00u) != 0xb400u && (h & 0xfe00u) != 0xbc00u) return false;
-  const bool pop = h & 0x0800u, extra = h & 0x0100u;
-  const u32 n = __builtin_popcount(h & 0xffu) + static_cast<u32>(extra);
-  // shortcut: ARM9 Thumb block remains interpreted, enable after dual-core timing regression is fixed.
-  return n > 1 && !(pop && extra) && !arm9;
+  if (arm9) return false; // shortcut: enable ARM9 Thumb blocks after dual-core timing regression is fixed.
+  if ((h & 0xfe00u) == 0xb400u || (h & 0xfe00u) == 0xbc00u) {
+    const bool pop = h & 0x0800u, extra = h & 0x0100u;
+    const u32 n = __builtin_popcount(h & 0xffu) + static_cast<u32>(extra);
+    return n > 1 && !(pop && extra);
+  }
+  if ((h & 0xf000u) != 0xc000u) return false;
+  const u32 list = h & 0xffu, rn = (h >> 8) & 7;
+  return __builtin_popcount(list) > 1 && !(list & (1u << rn));
 }
 static int arm7_data_slot(const CpuContext &c, u32 pc, bool thumb,
                           u32 width, bool load) {
@@ -853,6 +857,13 @@ static void emit_thumb_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                                  u32 instr, u32 cache_mask,
                                  std::vector<size_t> &ex) {
   const u32 h = static_cast<ds::u16>(instr);
+  if ((h & 0xf000u) == 0xc000u) {
+    const u32 list = h & 0xffu, rn = (h >> 8) & 7;
+    const u32 arm = ((h & 0x0800u) ? 0xe8b00000u : 0xe8a00000u) |
+                    (rn << 16) | list;
+    emit_arm_block_mem(e, c, pc, arm, cache_mask, ex, true, h);
+    return;
+  }
   const bool pop = h & 0x0800u;
   u32 list = h & 0xffu;
   if (!pop && (h & 0x0100u)) list |= 1u << 14;
@@ -1590,12 +1601,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     if (use_native_mem && (!native_limit || candidates < native_limit) &&
         thumb && native_thumb_block(x, arm9)) {
       ++candidates;
-      score_reg(13);
       const u32 h = static_cast<ds::u16>(x);
-      const bool pop = h & 0x0800u;
-      for (u32 r = 0; r < 8; ++r)
-        if (h & (1u << r)) score_reg(r, pop ? 1 : 2);
-      if (!pop && (h & 0x0100u)) score_reg(14, 2);
+      if ((h & 0xf000u) == 0xc000u) {
+        const bool load = h & 0x0800u;
+        score_reg((h >> 8) & 7, 2);
+        for (u32 r = 0; r < 8; ++r)
+          if (h & (1u << r)) score_reg(r, load ? 1 : 2);
+      } else {
+        const bool pop = h & 0x0800u;
+        score_reg(13);
+        for (u32 r = 0; r < 8; ++r)
+          if (h & (1u << r)) score_reg(r, pop ? 1 : 2);
+        if (!pop && (h & 0x0100u)) score_reg(14, 2);
+      }
     }
     if (use_native_branch && !thumb &&
         (!native_limit || candidates < native_limit) && native_arm_exc_return(x)) {

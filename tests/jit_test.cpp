@@ -1277,6 +1277,22 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 4);
     CHECK(results[0] == 0x12345678u && results[1] == 0x87654321u &&
           results[2] == 0xA5A55A5Au && results[3] == 0x5A5AA5A5u);
+    Trial thumb_stm_ldm{};
+    thumb_stm_ldm.thumb = true;
+    thumb_stm_ldm.require_halt = true;
+    thumb_stm_ldm.code = {0xC40F, 0x2000, 0x2100, 0x2200, 0x2300,
+                          0x3C10, 0xCC0F, 0x6030, 0x6071, 0x60B2, 0x60F3};
+    thumb_stm_ldm.regs[0] = 0x12345678u;
+    thumb_stm_ldm.regs[1] = 0x87654321u;
+    thumb_stm_ldm.regs[2] = 0xA5A55A5Au;
+    thumb_stm_ldm.regs[3] = 0x5A5AA5A5u;
+    thumb_stm_ldm.regs[4] = BUF_BASE + 0x400;
+    thumb_stm_ldm.regs[6] = BUF_BASE;
+    thumb_stm_ldm.regs[13] = STACK;
+    CHECK(run_both(mi, mj, thumb_stm_ldm, false, 74004, true));
+    std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 4);
+    CHECK(results[0] == 0x12345678u && results[1] == 0x87654321u &&
+          results[2] == 0xA5A55A5Au && results[3] == 0x5A5AA5A5u);
   }
   for (u32 op = 0; op < 16; ++op) {
     const u32 max_amount = (op >= 2 && op <= 4) || op == 7 ? 5 : 1;
