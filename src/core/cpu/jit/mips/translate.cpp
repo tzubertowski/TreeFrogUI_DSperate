@@ -35,7 +35,7 @@ using ds::jit::CACHE_FRAME;
 using ds::jit::CACHE_SAVED;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond, rdlo, shift_reg;
-  bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift;
+  bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift, rn_pc;
   bool signed_mul = false, accumulate = false, mul_arm7 = false;
   ds::u8 shift_type;
 };
@@ -176,8 +176,9 @@ static bool native(u32 x, N &n, bool shifts) {
   n.setflags = x & (1u << 20);
   // In immediate forms the low nibble belongs to imm8, not Rm.  Rejecting
   // rm==15 here silently routed valid immediate ALU instructions to fallback.
-  if (n.rd == 15 || n.rn == 15 || (a != AOp::DpImm && n.rm == 15))
+  if (n.rd == 15 || (a != AOp::DpImm && n.rm == 15))
     return false;
+  n.rn_pc = n.rn == 15;
   if (a == AOp::DpImm && n.op == 15 && !n.setflags && ai(x) == 0) {
     n.op = 13;
     n.imm = ~0u;
@@ -718,7 +719,10 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     putr(e, n.rd, T2, cache_mask);
     return;
   }
-  if (n.op != 13) getr(e, T0, n.rn, cache_mask);
+  if (n.op != 13) {
+    if (n.rn_pc) e.move(T0, R_GUEST_PC);
+    else getr(e, T0, n.rn, cache_mask);
+  }
   if (n.im)
     li(e, T1, n.imm);
   else {
