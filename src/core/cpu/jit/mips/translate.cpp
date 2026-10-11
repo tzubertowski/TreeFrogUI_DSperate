@@ -183,15 +183,15 @@ static bool native(u32 x, N &n, bool shifts) {
     n.im = true;
     return true;
   }
-  // Other BIC/MVN forms stay in the interpreter; complemented operands were
-  // the repeatable source of SF3000 crashes.
+  // BIC/MVN use arithmetic complements here; do not emit the failing NOR form.
   if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 3 && n.op != 4 &&
       n.op != 5 && n.op != 6 && n.op != 7 && n.op != 8 && n.op != 9 &&
-      n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
+      n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13 &&
+      n.op != 14 && n.op != 15)
     return false;
   const bool test_op = n.op == 8 || n.op == 9 || n.op == 10 || n.op == 11;
   const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
-                             n.op == 12 || n.op == 13;
+                             n.op == 12 || n.op == 13 || n.op == 14 || n.op == 15;
   if (test_op && !n.setflags)
     return false;
   if (n.setflags && !logical_flags && n.op != 2 && n.op != 3 && n.op != 4 &&
@@ -809,11 +809,12 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.move(T2, T1);
     break;
   case 14:
-    e.nor(T1, T1, 0);
-    e.and_(T2, T0, T1);
+    e.subu(12, 0, T1); e.addiu(12, 12, -1);
+    e.and_(T2, T0, 12);
     break;
-  default:
-    e.nor(T2, T1, 0);
+  case 15:
+    e.subu(T2, 0, T1); e.addiu(T2, T2, -1);
+    break;
   }
   if (n.setflags) {
     const bool arithmetic = n.op == 2 || n.op == 3 || n.op == 4 || n.op == 5 ||
@@ -1393,10 +1394,35 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     B x{};
     u32 z = q;
-    while (q < is.size() &&
-           !(use_native && (!native_limit || native_count < native_limit) &&
-             (native_insn(is[q], thumb, arm9, n) ||
-              (thumb && native_thumb_special(is[q], key_pc(ks[q]), n))))) {
+    auto native_boundary = [&](u32 i) {
+      if (use_native && (!native_limit || native_count < native_limit) &&
+          (native_insn(is[i], thumb, arm9, n) ||
+           (thumb && native_thumb_special(is[i], key_pc(ks[i]), n))))
+        return true;
+      if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
+          (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i])))
+        return true;
+      if (use_native_branch && (!native_limit || native_count < native_limit)) {
+        if (!thumb && (arm_branch(is[i]) ||
+            ((is[i] & 0x0FFFFFF0u) == 0x012FFF10u && (is[i] & 15u) != 15u)))
+          return true;
+        if (thumb && (thumb_branch(is[i]) ||
+            (thumb_bl_prefix(is[i]) && i + 1 < is.size() &&
+             thumb_bl_suffix(is[i + 1]))))
+          return true;
+      }
+      if (use_native_mem && (!native_limit || native_count < native_limit)) {
+        ThumbMem m{};
+        bool candidate = thumb ? native_thumb_mem(is[i], m) :
+            native_arm_mem(is[i], key_pc(ks[i]), m);
+        if (!candidate && !thumb) candidate = native_arm_single_multi(is[i], m);
+        if (candidate && (arm9 || arm7_data_slot(*jc.ctx, key_pc(ks[i]), thumb,
+                                                   m.width, m.load) >= 0))
+          return true;
+      }
+      return false;
+    };
+    while (q < is.size() && !native_boundary(q)) {
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
     }

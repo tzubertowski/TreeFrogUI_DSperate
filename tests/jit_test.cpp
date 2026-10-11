@@ -1046,6 +1046,20 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, mrs, true, 94017, true));
     std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
     CHECK(results[0] == mj.cpu.hot.cpsr);
+    Trial complements{};
+    complements.require_halt = true;
+    complements.code = {0xE1E00003, 0xE5840000, 0xE1C10002, 0xE5840004,
+                        0xE1F00003, 0xE5840008};
+    for (int r = 0; r < 15; ++r) complements.regs[r] = 0;
+    complements.regs[1] = 0xFFFFFFF0u;
+    complements.regs[2] = 0x0Fu;
+    complements.regs[3] = 0;
+    complements.regs[4] = BUF_BASE;
+    complements.regs[13] = STACK;
+    CHECK(run_both(mi, mj, complements, true, 94019, true));
+    std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 3);
+    CHECK(results[0] == ~u32{0} && results[1] == 0xFFFFFFF0u &&
+          results[2] == ~u32{0});
   } else {
     Trial arm7_mem{};
     arm7_mem.require_halt = true;
@@ -1106,6 +1120,16 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, mrs, false, 74009, true));
     std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
     CHECK(arm7_words[0] == mj.cpu.hot.cpsr);
+    Trial mvn{};
+    mvn.require_halt = true;
+    mvn.code = {0xE1E01003, 0xE5841000};
+    for (int r = 0; r < 15; ++r) mvn.regs[r] = 0;
+    mvn.regs[3] = 0;
+    mvn.regs[4] = BUF_BASE;
+    mvn.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mvn, false, 74010, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
+    CHECK(arm7_words[0] == ~u32{0});
   }
   Trial branch{};
   branch.thumb = true;
