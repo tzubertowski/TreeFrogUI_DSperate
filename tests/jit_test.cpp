@@ -722,6 +722,16 @@ void native_alu(int only = -1) {
         pc_operand.regs[13] = STACK;
         CHECK(run_both(mi, mj, pc_operand, which == Cpu::ARM9,
                        which == Cpu::ARM9 ? 100900 : 80900, true));
+        Trial msr_flags{};
+        msr_flags.require_halt = true;
+        msr_flags.cpsr = 0x0000001fu;
+        msr_flags.code = {0xE128F003u, 0xE10F4000u, 0xE328F20Fu,
+                          0xE10F5000u, 0xE5844000u, 0xE5845004u};
+        msr_flags.regs[3] = 0xa1234567u;
+        msr_flags.regs[4] = BUF_BASE;
+        msr_flags.regs[13] = STACK;
+        CHECK(run_both(mi, mj, msr_flags, which == Cpu::ARM9,
+                       which == Cpu::ARM9 ? 100950 : 80950, true));
         for (u32 carry : {0u, 1u}) {
           Trial rrx{};
           rrx.require_halt = true;

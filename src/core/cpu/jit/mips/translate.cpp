@@ -1029,6 +1029,12 @@ static bool native_mrs_cpsr(u32 x) {
   return ds::arm::decode_arm(x) == AOp::Mrs && !(x & (1u << 22)) &&
          ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
 }
+static bool native_msr_flags(u32 x) {
+  const AOp op = ds::arm::decode_arm(x);
+  return (op == AOp::MsrReg || op == AOp::MsrImm) &&
+         !(x & (1u << 22)) && ((x >> 16) & 15u) == 8 && (x >> 28) != 15 &&
+         (op != AOp::MsrReg || (x & 15u) != 15u);
+}
 static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
          (x & 0xf800u) == 0xe000u;
@@ -1141,6 +1147,12 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
       const u32 rd = (x >> 12) & 15u;
       if (rd < CACHE_COUNT) cache_mask |= 1u << rd;
+    }
+    if (use_native && !thumb &&
+        (!native_limit || candidates < native_limit) && native_msr_flags(x)) {
+      ++candidates;
+      if (ds::arm::decode_arm(x) == AOp::MsrReg && (x & 15u) < CACHE_COUNT)
+        cache_mask |= 1u << (x & 15u);
     }
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, m) :
@@ -1405,6 +1417,29 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) && native_msr_flags(is[q])) {
+      note_code_dep(b, pc + 8);
+      emit_timing(e, *jc.ctx, pc, false);
+      std::vector<size_t> skip;
+      emit_skip_if_false(e, is[q] >> 28, skip);
+      if (ds::arm::decode_arm(is[q]) == AOp::MsrImm)
+        li(e, T1, ai(is[q]));
+      else
+        getr(e, T1, is[q] & 15u, cache_mask);
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      li(e, T2, 0x00ffffffu); e.and_(T0, T0, T2);
+      li(e, T2, 0xff000000u); e.and_(T1, T1, T2);
+      e.or_(T0, T0, T1);
+      e.sw(T0, ds::jit::OFF_CPSR, R_CTX);
+      for (size_t p : skip) e.patch_branch(p, e.size());
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     ThumbMem mem{};
     bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
                              native_arm_mem(is[q], pc, mem);
@@ -1549,7 +1584,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
            (thumb && native_thumb_special(is[i], key_pc(ks[i]), n))))
         return true;
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
-          (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i])))
+          (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
+           native_msr_flags(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
         if (!thumb && (arm_branch(is[i]) ||
