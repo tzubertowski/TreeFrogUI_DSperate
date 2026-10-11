@@ -619,6 +619,10 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // SMLALBB / SMLALTT r4 (lo), r5 (hi), r1, r2: a carry out of the low word, and a negative product.
     {Cpu::ARM9, false, {0xE1454281, 0xE2800001}, {0, 0x7FFF8000u, 0x00028001u, 0, 0xFFFFFFF0u, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE14542E1, 0xE2800001}, {0, 0x7FFF8000u, 0x80018001u, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // ARM9 CLZ lowers directly to MIPS32r2 SPECIAL2; test zero and boundary values.
+    {Cpu::ARM9, false, {0xE16F0F11}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    {Cpu::ARM9, false, {0xE16F0F11}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    {Cpu::ARM9, false, {0xE16F0F11}, {0, 0x80000000u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {

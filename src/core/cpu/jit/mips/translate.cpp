@@ -367,6 +367,12 @@ static bool native_thumb(u32 x, N &n, bool arm9) {
 }
 static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
   const AOp decoded = !thumb ? ds::arm::decode_arm(x) : AOp::Undefined;
+  if (!thumb && arm9 && decoded == AOp::Clz) {
+    const u32 rd = (x >> 12) & 15u, rm = x & 15u;
+    if (rd == 15 || rm == 15) return false;
+    n.op = 18; n.rd = rd; n.rm = rm; n.cond = x >> 28;
+    return native_op_enabled(n.op, arm9);
+  }
   if (!thumb && arm9 && (decoded == AOp::Umull || decoded == AOp::Umlal ||
                          decoded == AOp::Smull || decoded == AOp::Smlal)) {
     const u32 hi = (x >> 16) & 15u, lo = (x >> 12) & 15u;
@@ -1525,8 +1531,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     if (use_native && (!native_limit || candidates < native_limit) &&
         native_insn(x, thumb, arm9, n)) {
       ++candidates;
-      if (n.op != 13 || n.reg_shift) score_reg(n.rn);
-      if (!n.im) score_reg(n.rm);
+      if (n.op == 18) score_reg(n.rm);
+      else {
+        if (n.op != 13 || n.reg_shift) score_reg(n.rn);
+        if (!n.im) score_reg(n.rm);
+      }
       if (n.reg_shift) score_reg(n.shift_reg);
       if (n.op == 17 && n.accumulate) score_reg(n.rd);
       if (n.op == 17 || (n.op == 16 && n.accumulate)) score_reg(n.rdlo);
@@ -2085,6 +2094,21 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + (thumb ? 4 : 8));
       emit_trace(e, is[q], key_pc(ks[q]), thumb, cache_mask);
+      if (n.op == 18) {
+        emit_timing(e, *jc.ctx, key_pc(ks[q]), false);
+        std::vector<size_t> skip;
+        emit_skip_if_false(e, n.cond, skip);
+        getr(e, T1, n.rm, cache_mask);
+        e.clz(T2, T1);
+        putr(e, n.rd, T2, cache_mask);
+        for (size_t p : skip) e.patch_branch(p, e.size());
+        e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+        ex.push_back(e.blez(R_BUDGET)); e.nop();
+        ++native_count;
+        rt().stats.instrs_translated++;
+        ++q;
+        continue;
+      }
       const bool arm7_conditional_internal = !arm9 && !thumb &&
           (n.reg_shift || n.mul_arm7);
       emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb,

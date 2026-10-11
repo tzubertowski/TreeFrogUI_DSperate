@@ -37,6 +37,7 @@ public:
   void mult(u32 s,u32 t){w(0x00000018u|(s<<21)|(t<<16));}
   void mflo(u32 d){w(0x00000012u|(d<<11));}
   void mfhi(u32 d){w(0x00000010u|(d<<11));}
+  void clz(u32 d,u32 s){w(0x70000020u|(s<<21)|(d<<11));}
   void move(u32 d,u32 s){addu(d,s,0);}
   void lw(u32 d,s32 o,u32 s){w(0x8c000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void sw(u32 d,s32 o,u32 s){w(0xac000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
