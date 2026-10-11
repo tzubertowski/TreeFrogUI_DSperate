@@ -646,6 +646,57 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
 }
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
                         bool internal = false);
+static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
+                                 u32 start, bool load, u32 n) {
+  e.move(T0, 0);
+  e.lw(T3, offsetof(CpuContext, timing7), R_CTX); e.nop();
+  for (u32 k = 0; k < n; ++k) {
+    if (k) e.addiu(T1, start, static_cast<s32>(k * 4));
+    else e.move(T1, start);
+    e.srl(T1, T1, 15); e.sll(T1, T1, 2); e.addu(T1, T3, T1);
+    e.lbu(T1, k ? 3 : 2, T1); e.nop(); e.addu(T0, T0, T1);
+  }
+  const u32 nc = c.timing7[pc >> 15][2];
+  auto max = [&] {
+    e.sltu(T3, T1, T0); e.subu(T3, 0, T3);
+    e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
+  };
+  auto different_region_cost = [&] {
+    e.addu(T2, T0, T1);
+    max();
+    e.sltiu(T3, T2, 3);
+    const size_t no_combine = e.bnez(T3); e.nop();
+    e.addiu(T2, T2, -3);
+    e.move(T1, T2); max();
+    e.patch_branch(no_combine, e.size());
+  };
+  const bool code_main = (pc >> 24) == 2;
+  e.srl(T2, start, 24); e.addiu(T3, 0, 2);
+  const size_t data_main = e.beq(T2, T3); e.nop();
+  if (code_main) {
+    e.addiu(T1, 0, nc);
+    if (load) e.addiu(T0, T0, 1);
+    different_region_cost();
+  } else if (load) {
+    e.addiu(T1, 0, nc + 1);
+    e.addu(T0, T0, T1);
+  } else {
+    e.addiu(T1, 0, nc);
+    different_region_cost();
+  }
+  const size_t cross_done = e.b(); e.nop();
+  e.patch_branch(data_main, e.size());
+  if (code_main) {
+    e.addiu(T1, 0, nc);
+    e.addu(T0, T0, T1);
+  } else {
+    e.addiu(T1, 0, nc);
+    if (load) e.addiu(T1, T1, 1); // ARM7's load internal cycle belongs to code.
+    different_region_cost();
+  }
+  e.patch_branch(cross_done, e.size());
+  e.subu(R_BUDGET, R_BUDGET, T0);
+}
 static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                                u32 instr, u32 cache_mask,
                                std::vector<size_t> &ex) {
@@ -681,36 +732,6 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.sw(T3, 52, R_SP);
   }
 
-  // Aggregate N+S data timing before the transfer; the ARM9 charges one CD/CDI.
-  e.move(T0, 0);
-  e.lw(T3, offsetof(CpuContext, timing9), R_CTX); e.nop();
-  u32 k = 0;
-  for (u32 r = 0; r < 15; ++r) {
-    if (!(list & (1u << r))) continue;
-    if (k) e.addiu(T1, R_FP, static_cast<s32>(k * 4));
-    else e.move(T1, R_FP);
-    e.srl(T1, T1, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
-    e.lbu(T1, (load ? 0 : 4) + (k ? 3 : 2), T1); e.nop();
-    e.addu(T0, T0, T1);
-    ++k;
-  }
-  const u32 nc = arm9_code_cost(c, pc, false);
-  if (nc >= 6) {
-    e.sltiu(T1, T0, 6);
-    const size_t short_data = e.bnez(T1); e.nop();
-    e.addiu(T0, T0, static_cast<s32>(nc - 6));
-    const size_t combined = e.b(); e.nop();
-    e.patch_branch(short_data, e.size());
-    li(e, T0, nc);
-    e.patch_branch(combined, e.size());
-  } else {
-    if (nc) e.addiu(T1, 0, nc); else e.move(T1, 0);
-    e.sltu(T3, T1, T0);
-    e.subu(T3, 0, T3);
-    e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
-  }
-  e.subu(R_BUDGET, R_BUDGET, T0);
-
   for (u32 r = 0, off = 0; r < 15; ++r) {
     if (!(list & (1u << r))) continue;
     if (load) {
@@ -721,6 +742,37 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     off += 4;
   }
   if (writeback) { e.lw(T3, 52, R_SP); e.nop(); putr(e, rn, T3, cache_mask); }
+  if (c.which == ds::Cpu::ARM9) {
+    // Aggregate N+S data timing; the ARM9 charges one CD/CDI.
+    e.move(T0, 0);
+    e.lw(T3, offsetof(CpuContext, timing9), R_CTX); e.nop();
+    u32 k = 0;
+    for (u32 r = 0; r < 15; ++r) {
+      if (!(list & (1u << r))) continue;
+      if (k) e.addiu(T1, R_FP, static_cast<s32>(k * 4));
+      else e.move(T1, R_FP);
+      e.srl(T1, T1, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
+      e.lbu(T1, (load ? 0 : 4) + (k ? 3 : 2), T1); e.nop();
+      e.addu(T0, T0, T1);
+      ++k;
+    }
+    const u32 nc = arm9_code_cost(c, pc, false);
+    if (nc >= 6) {
+      e.sltiu(T1, T0, 6);
+      const size_t short_data = e.bnez(T1); e.nop();
+      e.addiu(T0, T0, static_cast<s32>(nc - 6));
+      const size_t combined = e.b(); e.nop();
+      e.patch_branch(short_data, e.size());
+      li(e, T0, nc);
+      e.patch_branch(combined, e.size());
+    } else {
+      if (nc) e.addiu(T1, 0, nc); else e.move(T1, 0);
+      e.sltu(T3, T1, T0);
+      e.subu(T3, 0, T3);
+      e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
+    }
+    e.subu(R_BUDGET, R_BUDGET, T0);
+  } else emit_arm7_block_cost(e, c, pc, R_FP, load, n);
   e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
   ex.push_back(e.blez(R_BUDGET)); e.nop();
   done.push_back(e.b()); e.nop();
@@ -744,6 +796,60 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   ex.push_back(e.blez(R_BUDGET)); e.nop();
   const size_t end = e.size();
   for (size_t p : done) e.patch_branch(p, end);
+}
+static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
+                                 u32 instr, u32 cache_mask,
+                                 std::vector<size_t> &ex) {
+  const u32 fields = (instr >> 16) & 15;
+  const u32 mask = ((fields & 1) ? 0x000000dfu : 0) |
+                   ((fields & 2) ? 0x0000ff00u : 0) |
+                   ((fields & 4) ? 0x00ff0000u : 0) |
+                   ((fields & 8) ? 0xff000000u : 0);
+  std::vector<size_t> not_executed, changed_mode;
+  emit_skip_if_false(e, instr >> 28, not_executed);
+  e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+  if (ds::arm::decode_arm(instr) == AOp::MsrImm) li(e, T1, ai(instr));
+  else getr(e, T1, instr & 15u, cache_mask);
+  e.andi(T3, T0, 31); e.addiu(T2, 0, 0x10);
+  const size_t user_mode = e.beq(T3, T2); e.nop();
+
+  li(e, T2, mask); e.and_(T1, T1, T2);
+  li(e, T2, ~mask); e.and_(T3, T0, T2); e.or_(T1, T1, T3);
+  e.xor_(T2, T0, T1); e.andi(T2, T2, 31);
+  changed_mode.push_back(e.bnez(T2)); e.nop();
+  e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
+  const size_t user_done = e.b(); e.nop();
+
+  const size_t user_at = e.size();
+  e.patch_branch(user_mode, user_at);
+  if (fields & 8) {
+    li(e, T2, 0xff000000u); e.and_(T1, T1, T2);
+    li(e, T2, 0x00ffffffu); e.and_(T0, T0, T2);
+    e.or_(T1, T1, T0); e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
+  }
+  e.patch_branch(user_done, e.size());
+  emit_timing(e, c, pc, false);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  ex.push_back(e.b()); e.nop(); // CPSR control changes may unmask an IRQ.
+
+  const size_t slow_at = e.size();
+  for (size_t p : changed_mode) e.patch_branch(p, slow_at);
+  e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, false));
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
+  spill_cached(e, cache_mask);
+  e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+  e.jalr(R_RA, 25); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  reload_cached(e, cache_mask);
+  ex.push_back(e.b()); e.nop();
+
+  const size_t not_exec_at = e.size();
+  for (size_t p : not_executed) e.patch_branch(p, not_exec_at);
+  emit_timing(e, c, pc, false);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
 }
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
                         bool internal) {
@@ -1165,6 +1271,12 @@ static bool native_msr_flags(u32 x) {
   const AOp op = ds::arm::decode_arm(x);
   return (op == AOp::MsrReg || op == AOp::MsrImm) &&
          !(x & (1u << 22)) && ((x >> 16) & 15u) == 8 && (x >> 28) != 15 &&
+         (op != AOp::MsrReg || (x & 15u) != 15u);
+}
+static bool native_msr_control(u32 x) {
+  const AOp op = ds::arm::decode_arm(x);
+  return (op == AOp::MsrReg || op == AOp::MsrImm) && !(x & (1u << 22)) &&
+         ((x >> 16) & 1u) && (x >> 28) != 15u &&
          (op != AOp::MsrReg || (x & 15u) != 15u);
 }
 static bool thumb_branch(u32 x) {
@@ -1604,7 +1716,16 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
-    if (use_native_mem && arm9 && !thumb &&
+    if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) && native_msr_control(is[q])) {
+      note_code_dep(b, pc + 8);
+      emit_arm_msr_control(e, *jc.ctx, pc, is[q], cache_mask, ex);
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native_mem && !thumb &&
         (!native_limit || native_count < native_limit) && native_arm_block(is[q])) {
       note_code_dep(b, pc + 8);
       b.dep_overflow = true;
@@ -1759,7 +1880,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         return true;
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
           (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
-           native_msr_flags(is[i])))
+           native_msr_flags(is[i]) || native_msr_control(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
         if (!thumb && (arm_branch(is[i]) ||
@@ -1771,7 +1892,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
-        if (arm9 && !thumb && native_arm_block(is[i])) return true;
+        if (!thumb && native_arm_block(is[i])) return true;
         ThumbMem m{};
         bool candidate = thumb ? native_thumb_mem(is[i], m) :
             native_arm_mem(is[i], key_pc(ks[i]), m);

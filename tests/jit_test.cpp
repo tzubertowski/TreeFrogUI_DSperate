@@ -940,6 +940,28 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
 
   t = Trial{};
   t.require_halt = true;
+  t.code = {0xE129F001, 0xE129F002}; // Same-mode CPSR control writes stay native.
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[1] = 0x5f; t.regs[2] = 0x1f; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91013 : 71013, true));
+
+  t = Trial{};
+  t.require_halt = true;
+  t.code = {0xE129F001, 0xE1A0D004, 0xE129F002}; // Mode switch takes interpreter fallback.
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[1] = 0x12; t.regs[2] = 0x1f; t.regs[4] = 0x12345678;
+  t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91014 : 71014, true));
+
+  t = Trial{};
+  t.require_halt = true;
+  t.code = {0x0129F001}; // MSREQ control write skipped when Z is clear.
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[1] = 0x12; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91015 : 71015, true));
+
+  t = Trial{};
+  t.require_halt = true;
   t.code = {0xE3A0E055, 0xE92D4000, 0xE3A0E000, 0xE8BD4000,
             0xE584E000}; // push/pop {lr}, then verify the restored value
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
@@ -1036,6 +1058,19 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
         std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
         CHECK(result == (passes(cond, flags) ? 2u : 1u));
       }
+    }
+  }
+  if (!a9) {
+    for (u32 mode = 0; mode < 16; ++mode) {
+      t = Trial{};
+      t.require_halt = true;
+      const u32 list = (mode & 1) ? 0x4105u : 0x7a25u;
+      t.code = {0xE8000000u | ((mode & 1) << 24) | ((mode & 2) << 22) |
+                ((mode & 4) << 19) | ((mode & 8) << 17) | 0x00040000u | list};
+      for (int i = 0; i < 15; ++i) t.regs[i] = 0x76540000u + 0x101u * i;
+      t.regs[4] = BUF_BASE + 0x600; t.regs[13] = STACK;
+      if (mode & 1) t.cpsr = (mode & 2) ? 0x40000000u : 0x80000000u;
+      CHECK(run_both(mi, mj, t, false, 71100 + mode, true));
     }
   }
   jit::detach(mj.nds);
