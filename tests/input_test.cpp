@@ -319,6 +319,26 @@ void test_default_r2_swaps_screen() {
   CHECK(in.frame().buttons & (1u << io::Io::BTN_R));
 }
 
+void test_sf3000_pause_and_l2_layout_hotkeys() {
+  Rig r; Input& in = r.go();
+  volatile std::uint32_t keys = 1u; // SELECT
+  T::sf_keys(in, &keys);
+  in.poll_platform();
+  CHECK(in.take_actions().empty());
+  keys |= 1u << 10; // L1 completes SELECT + L1.
+  in.poll_platform();
+  std::vector<Action> actions = in.take_actions();
+  CHECK(actions.size() == 1 && actions[0] == Action::Pause);
+  CHECK(!(in.frame().buttons & ((1u << io::Io::BTN_SELECT) | (1u << io::Io::BTN_L))));
+  keys = 0;
+  in.poll_platform();
+  keys = 1u << 8; // L2 cycles the layout and is not sent as DS L.
+  in.poll_platform();
+  actions = in.take_actions();
+  CHECK(actions.size() == 1 && actions[0] == Action::LayoutNext);
+  CHECK(!(in.frame().buttons & (1u << io::Io::BTN_L)));
+}
+
 // "mod" alone: the modifier released with nothing else pressed while it was
 // held fires that hotkey; any other press in between makes it a chord run.
 void test_modifier_alone_is_a_hotkey() {
@@ -611,6 +631,7 @@ int main() {
   ds::sdl::test_escape_cancels_once_quit_moves();
   ds::sdl::test_default_select_l1_opens_pause();
   ds::sdl::test_default_r2_swaps_screen();
+  ds::sdl::test_sf3000_pause_and_l2_layout_hotkeys();
   ds::sdl::test_select_start_always_quits();
   ds::sdl::test_pad_capture_swallows_keys_and_escape_cancels();
   ds::sdl::test_capture_composes_a_chord_with_the_modifier();

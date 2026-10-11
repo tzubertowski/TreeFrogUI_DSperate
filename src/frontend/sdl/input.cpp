@@ -35,7 +35,7 @@ const char* const kKeyHotDefaults[static_cast<int>(Action::Count)] = {
   "Escape", "p", "Tab", "none", "F5", "F7", "F3", "F2", "=", "-", "0", "F4", "F10", "F6", "F8", "f", "F9", "l", "m", "none"};
 const char* const kPadHotDefaults[static_cast<int>(Action::Count)] = {
   "mod+start+back", "back+leftshoulder", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
-  "none", "none", "none", "mod+back", "mod+x", "+righttrigger", "none", "none", "none", "none", "leftstick", "+lefttrigger"};
+  "none", "none", "none", "+lefttrigger", "mod+x", "+righttrigger", "none", "none", "none", "none", "leftstick", "none"};
 
 // Controls that are neither a DS button nor a hotkey: hotkey modifier and
 // the pad-driven pen. Kept as one copy readable from both configure() and
@@ -363,12 +363,37 @@ void Input::poll_platform() {
   };
   set_raw(4, B::BTN_UP); set_raw(6, B::BTN_DOWN); set_raw(7, B::BTN_LEFT); set_raw(5, B::BTN_RIGHT);
   set_raw(13, B::BTN_A); set_raw(14, B::BTN_B); set_raw(12, B::BTN_X); set_raw(15, B::BTN_Y);
-  set_raw(10, B::BTN_L); set_raw(8, B::BTN_L);
-  set_raw(3, B::BTN_START); set_raw(0, B::BTN_SELECT);
+  set_raw(3, B::BTN_START);
+  const size_t action_base = actions_.size();
+  if (changed & 1u) {
+    Bind select; select.kind = Bind::PadButton; select.code = SDL_CONTROLLER_BUTTON_BACK;
+    pad_down(select, raw & 1u);
+  }
+  if (changed & (1u << 10)) {
+    Bind l1; l1.kind = Bind::PadButton; l1.code = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+    const size_t before = actions_.size();
+    pad_down(l1, (raw >> 10) & 1);
+    sf_l1_hotkey_ = (raw & (1u << 10)) && actions_.size() != before;
+  }
+  if (changed & (1u << 8)) {
+    Bind l2; l2.kind = Bind::PadAxis; l2.code = SDL_CONTROLLER_AXIS_TRIGGERLEFT;
+    sf_l2_hotkey_ = pad_down(l2, (raw >> 8) & 1);
+  }
   if (changed & (1u << 9)) {
     Bind r2; r2.kind = Bind::PadAxis; r2.code = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
     sf_r2_hotkey_ = pad_down(r2, (raw >> 9) & 1);
   }
+  const bool pause_chord = (raw & ((1u << 0) | (1u << 10))) == ((1u << 0) | (1u << 10));
+  if (!pause_chord) sf_pause_chord_ = false;
+  else if (std::find(actions_.begin() + static_cast<std::ptrdiff_t>(action_base), actions_.end(), Action::Pause) != actions_.end())
+    sf_pause_chord_ = true;
+  if (sf_pause_chord_) {
+    buttons_ &= ~((1u << B::BTN_SELECT) | (1u << B::BTN_L));
+    pressed_ &= ~((1u << B::BTN_SELECT) | (1u << B::BTN_L));
+  }
+  if (changed & ((1u << 8) | (1u << 10)))
+    set(B::BTN_L, ((raw & (1u << 10)) && !sf_l1_hotkey_ && !sf_pause_chord_) ||
+                  ((raw & (1u << 8)) && !sf_l2_hotkey_));
   if (changed & ((1u << 9) | (1u << 11)))
     set(B::BTN_R, (raw & (1u << 11)) || ((raw & (1u << 9)) && !sf_r2_hotkey_));
   if ((raw & (1u << 3)) && (raw & 1u)) quit_ = true;

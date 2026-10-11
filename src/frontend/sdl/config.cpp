@@ -309,7 +309,7 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 # vsync = true
 # fps = true                    # frames-per-second counter in a corner of the primary screen. Counts
                                 # presented frames, so frameskip and fast forward show. The fps hotkey
-                                # toggles it (on by default; L2 toggles it)
+                                # toggles it (on by default)
 
 [audio]
 # enabled = true
@@ -534,13 +534,13 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 # slot_prev = mod+dpleft
 # volume_up = none
 # volume_down = none
-# layout_next = mod+back
+# layout_next = +lefttrigger     # L2 cycles the layout
 # layout_prev = mod+x
 # screen_swap = +righttrigger   # R2 swaps the top/bottom screen shown alone
 # pip_corner_next = none
 # screenshot = none
 # mic = leftstick
-# fps = +lefttrigger       # L2 toggles the on-screen FPS counter
+# fps = none               # L2 is reserved for cycling the screen layout
 
 [cheevos]
 # RetroAchievements, Casual mode (formerly Softcore). Hardcore is NOT supported!
