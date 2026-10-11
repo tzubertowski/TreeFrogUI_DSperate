@@ -866,7 +866,7 @@ bool parse_video(const ds::sdl::Config& cfg, VideoSetup& vs) {
   vs.layout = Disp::Layout{};
   vs.layout_cycle.clear();
   {
-    const std::string l = cfg.str("video.layout", "vertical"), sc = cfg.str("video.screen", "top"), co = cfg.str("video.pip_corner", "br");
+    const std::string l = cfg.str("video.layout", "single"), sc = cfg.str("video.screen", "top"), co = cfg.str("video.pip_corner", "br");
     if (!Disp::parse_mode(l, vs.layout.mode)) { std::fprintf(stderr, "unknown layout %s\n", l.c_str()); return false; }
     if (sc == "top") vs.layout.primary = 0; else if (sc == "bottom") vs.layout.primary = 1;
     else { std::fprintf(stderr, "unknown screen %s (top | bottom)\n", sc.c_str()); return false; }

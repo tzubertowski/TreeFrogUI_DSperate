@@ -35,7 +35,7 @@ const char* const kKeyHotDefaults[static_cast<int>(Action::Count)] = {
   "Escape", "p", "Tab", "none", "F5", "F7", "F3", "F2", "=", "-", "0", "F4", "F10", "F6", "F8", "f", "F9", "l", "m", "none"};
 const char* const kPadHotDefaults[static_cast<int>(Action::Count)] = {
   "mod+start+back", "back+leftshoulder", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
-  "none", "none", "none", "mod+back", "mod+x", "mod+y", "none", "none", "none", "none", "leftstick", "+lefttrigger"};
+  "none", "none", "none", "mod+back", "mod+x", "+righttrigger", "none", "none", "none", "none", "leftstick", "+lefttrigger"};
 
 // Controls that are neither a DS button nor a hotkey: hotkey modifier and
 // the pad-driven pen. Kept as one copy readable from both configure() and
@@ -365,6 +365,10 @@ void Input::poll_platform() {
   set_raw(13, B::BTN_A); set_raw(14, B::BTN_B); set_raw(12, B::BTN_X); set_raw(15, B::BTN_Y);
   set_raw(10, B::BTN_L); set_raw(8, B::BTN_L); set_raw(11, B::BTN_R); set_raw(9, B::BTN_R);
   set_raw(3, B::BTN_START); set_raw(0, B::BTN_SELECT);
+  if (changed & (1u << 9)) {
+    Bind r2; r2.kind = Bind::PadAxis; r2.code = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+    pad_down(r2, (raw >> 9) & 1);
+  }
   if ((raw & (1u << 3)) && (raw & 1u)) quit_ = true;
 }
 

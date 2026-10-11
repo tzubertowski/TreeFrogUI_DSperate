@@ -130,7 +130,7 @@ const Setting kVideoSettings[] = {
 };
 
 const Setting kLayoutSettings[] = {
-  pick("video.layout", "LAYOUT", kLayout, 6, "vertical", FlagDeferred, Dep::OneWindow,
+  pick("video.layout", "LAYOUT", kLayout, 6, "single", FlagDeferred, Dep::OneWindow,
        "HOW THE TWO SCREENS SHARE THE WINDOW"),
   pick("video.screen", "MAIN SCREEN", kScreen, 2, "top", FlagDeferred, Dep::None,
        "THE SCREEN SHOWN ALONE, LARGE OR FIRST"),

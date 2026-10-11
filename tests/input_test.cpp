@@ -58,6 +58,7 @@ struct InputTestAccess {
     Input::Bind b; b.kind = Input::Bind::PadAxis; b.code = a; b.neg = neg;
     return in.pad_down(b, down);
   }
+  static void sf_keys(Input& in, volatile std::uint32_t* keys) { in.sf_keys_ = keys; }
   static void axis(Input& in, SDL_GameControllerAxis a, Sint16 v) { in.axis(a, v); }
   static void physical_axis(Input& in, SDL_GameControllerAxis a, Sint16 v) { in.physical_axis(a, v); }
   static bool pen_down(const Input& in) { return in.stylus_down_ != 0; }
@@ -299,6 +300,19 @@ void test_default_select_l1_opens_pause() {
   CHECK(actions.size() == 1 && actions[0] == Action::Pause);
   T::pad(in, SDL_CONTROLLER_BUTTON_BACK, false);
   T::pad(in, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+}
+
+void test_default_r2_swaps_screen() {
+  Rig r; Input& in = r.go();
+  T::axis(in, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 30000);
+  std::vector<Action> actions = in.take_actions();
+  CHECK(actions.size() == 1 && actions[0] == Action::ScreenSwap);
+  T::axis(in, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 0);
+  volatile std::uint32_t keys = 1u << 9; // SF3000 R2 bit (CV_R2).
+  T::sf_keys(in, &keys);
+  in.poll_platform();
+  actions = in.take_actions();
+  CHECK(actions.size() == 1 && actions[0] == Action::ScreenSwap);
 }
 
 // "mod" alone: the modifier released with nothing else pressed while it was
@@ -592,6 +606,7 @@ int main() {
   ds::sdl::test_escape_is_still_quit();
   ds::sdl::test_escape_cancels_once_quit_moves();
   ds::sdl::test_default_select_l1_opens_pause();
+  ds::sdl::test_default_r2_swaps_screen();
   ds::sdl::test_select_start_always_quits();
   ds::sdl::test_pad_capture_swallows_keys_and_escape_cancels();
   ds::sdl::test_capture_composes_a_chord_with_the_modifier();

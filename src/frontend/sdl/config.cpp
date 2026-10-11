@@ -230,7 +230,7 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 [video]
 # scale = 2                     # window size, in DS pixels
 # fullscreen = false
-# layout = vertical             # vertical | horizontal | single | pip | dominant_v | dominant_h
+# layout = single               # vertical | horizontal | single | pip | dominant_v | dominant_h
 # layout_cycle = vertical,horizontal,single,pip,dominant_v,dominant_h   # what the layout hotkeys step through
 # screen = top                  # top | bottom: the screen shown alone (single), large (pip) or dominant;
                                 # with dual_window, the one on the upper panel
@@ -536,7 +536,7 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 # volume_down = none
 # layout_next = mod+back
 # layout_prev = mod+x
-# screen_swap = mod+y
+# screen_swap = +righttrigger   # R2 swaps the top/bottom screen shown alone
 # pip_corner_next = none
 # screenshot = none
 # mic = leftstick
