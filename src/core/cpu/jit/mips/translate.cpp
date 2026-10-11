@@ -20,6 +20,7 @@ extern "C" ds::u32 jit_h_ld32(ds::CpuContext *, ds::u32);
 extern "C" void jit_h_st8(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" void jit_h_st16(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" void jit_h_st32(ds::CpuContext *, ds::u32, ds::u32);
+extern "C" void jit_h_trace(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_mips_indirect_branch(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_mips_exc_return(ds::CpuContext *, ds::u32);
 extern "C" void jit_h_mips_set_cpsr(ds::CpuContext *, ds::u32);
@@ -49,7 +50,7 @@ struct ThumbMem {
   bool neg = false, base_const = false, offset_const = false;
   bool writeback = false, post = false;
 };
-static bool native_thumb_mem(u32 x, ThumbMem &m) {
+static bool native_thumb_mem(u32 x, ThumbMem &m, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
   if ((h & 0xfe00u) == 0xb400u || (h & 0xfe00u) == 0xbc00u) {
     const bool pop = h & 0x0800u;
@@ -77,6 +78,8 @@ static bool native_thumb_mem(u32 x, ThumbMem &m) {
     m.width = widths[op];
     m.load = op >= 3;
     m.sign = op == 3 || op == 7;
+    // shortcut: ARM7 signed-halfword loads stay interpreted until odd-address byte semantics are native.
+    if (!arm9 && m.sign && m.width == 2) return false;
     m.reg = true;
     m.rm = (h >> 6) & 7;
     m.rn = (h >> 3) & 7;
@@ -121,6 +124,8 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const u32 sh = (x >> 5) & 3;
   m.width = extra ? (sh == 2 ? 1 : 2) : (x & (1u << 22)) ? 1 : 4;
   m.sign = extra && m.load && sh != 1;
+  // shortcut: ARM7 signed-halfword loads stay interpreted until odd-address byte semantics are native.
+  if (!arm9 && m.sign && m.width == 2) return false;
   m.neg = !(x & (1u << 23));
   m.post = !(x & (1u << 24));
   m.writeback = m.post;
@@ -313,7 +318,7 @@ static bool native_thumb(u32 x, N &n, bool arm9) {
     n.rm = (h >> 3) & 7;
     n.shift = (h >> 6) & 31;
     n.shift_type = (h >> 11) & 3;
-    n.carry_dynamic = n.shift_type != 0;
+    n.carry_dynamic = n.shift != 0 || n.shift_type != 0;
     n.carry_valid = n.carry_dynamic;
   } else if (imm8_arith || cmp_imm8) {
     n.rd = (h >> 8) & 7;
@@ -604,6 +609,11 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     } else if (m.sign) {
       e.sll(T1, T1, m.width == 1 ? 24 : 16);
       e.sra(T1, T1, m.width == 1 ? 24 : 16);
+    } else if (c.which == ds::Cpu::ARM7 && m.width == 2) {
+      e.andi(T3, R_FP, 1);
+      const size_t aligned = e.beq(T3, 0); e.nop();
+      e.rotr(T1, T1, 8);
+      e.patch_branch(aligned, e.size());
     }
     if (!pc_dest) putr(e, m.rd, T1, cache_mask);
   };
@@ -918,6 +928,18 @@ static void reload_cached(MipsEmitter &e, u32 cache_mask) {
     e.lw(CACHE_FIRST + __builtin_popcount(cache_mask & ((1u << r) - 1)), OR + 4 * r, R_CTX);
     e.nop();
   }
+}
+static void emit_trace(MipsEmitter &e, u32 instr, u32 pc, bool thumb,
+                       u32 cache_mask) {
+  if (!ds::jit::rt().trace) return;
+  spill_cached(e, cache_mask);
+  e.sw(R_BUDGET, OB, R_CTX);
+  e.sw(R_GUEST_PC, 60, R_SP);
+  e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, thumb));
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_trace));
+  e.jalr(R_RA, 25); e.nop();
+  e.lw(R_GUEST_PC, 60, R_SP); e.nop();
+  reload_cached(e, cache_mask);
 }
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
   const u32 page = addr >> 12;
@@ -1440,6 +1462,7 @@ extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext *c,
                                               const ds::u32 *ins,
                                               const ds::u32 *keys, ds::u32 n) {
   for (ds::u32 i = 0; i < n; ++i) {
+    if (ds::jit::rt().trace) jit_h_trace(c, ins[i], keys[i]);
     if (ds::jit::jit_h_fallback(c, ins[i], keys[i]) ||
         c->hot.cycle_budget <= 0 || c->halted || c->hot.alerts)
       return 1;
@@ -1522,7 +1545,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (ds::arm::decode_arm(x) == AOp::MsrReg) score_reg(x & 15u);
     }
     ThumbMem m{};
-    bool mem_candidate = thumb ? native_thumb_mem(x, m) :
+    bool mem_candidate = thumb ? native_thumb_mem(x, m, arm9) :
                                 native_arm_mem(x, key_pc(ks[i]), m, arm9);
     if (!mem_candidate && !thumb)
       mem_candidate = native_arm_single_multi(x, m);
@@ -1635,6 +1658,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         (!native_limit || native_count < native_limit) &&
         native_thumb_bx(is[q], arm9)) {
       note_code_dep(b, pc + 4);
+      emit_trace(e, is[q], pc, true, cache_mask);
       emit_thumb_bx_branch(e, pc, is[q], cache_mask, ex);
       ++native_count;
       rt().stats.instrs_translated++;
@@ -1730,6 +1754,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     if (use_native_branch && !thumb &&
         (!native_limit || native_count < native_limit) && arm_branch(is[q])) {
       note_code_dep(b, pc + 8);
+      emit_trace(e, is[q], pc, false, cache_mask);
       std::vector<size_t> not_taken;
       emit_skip_if_false(e, is[q] >> 28, not_taken);
       if (is[q] & (1u << 24)) {
@@ -1978,6 +2003,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         (!native_limit || native_count < native_limit) && native_arm_block(is[q])) {
       note_code_dep(b, pc + 8);
       b.dep_overflow = true;
+      emit_trace(e, is[q], pc, false, cache_mask);
       emit_arm_block_mem(e, *jc.ctx, pc, is[q], cache_mask, ex);
       ++native_count;
       rt().stats.instrs_translated++;
@@ -1985,7 +2011,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     ThumbMem mem{};
-    bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
+    bool native_mem = thumb ? native_thumb_mem(is[q], mem, arm9) :
                              native_arm_mem(is[q], pc, mem, arm9);
     if (!native_mem && !thumb)
       native_mem = native_arm_single_multi(is[q], mem);
@@ -2000,6 +2026,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      mem.neg ? '-' : '+', mem.imm, mem.writeback);
       note_code_dep(b, pc + (thumb ? 4 : 8));
       b.dep_overflow = true; // the access-time row can vary with the guest address
+      emit_trace(e, is[q], pc, thumb, cache_mask);
       emit_timing(e, *jc.ctx, pc, thumb);
       std::vector<size_t> pred_skip;
       if (!thumb) emit_skip_if_false(e, mem.cond, pred_skip);
@@ -2057,12 +2084,25 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
                      n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + (thumb ? 4 : 8));
-      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb, n.reg_shift || n.mul_arm7);
+      emit_trace(e, is[q], key_pc(ks[q]), thumb, cache_mask);
+      const bool arm7_conditional_internal = !arm9 && !thumb &&
+          (n.reg_shift || n.mul_arm7);
+      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb,
+                  (n.reg_shift || n.mul_arm7) && !arm7_conditional_internal);
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
-      emit_n(e, n, cache_mask);
+      if (arm7_conditional_internal) {
+        const auto &t = jc.ctx->timing7[key_pc(ks[q]) >> 15];
+        const s32 extra_fetch = static_cast<s32>(t[2]) - t[3];
+        if (extra_fetch) e.addiu(R_BUDGET, R_BUDGET, -extra_fetch);
+      }
       if (n.mul_arm7 && n.op == 16) {
         getr(e, T0, n.rn, cache_mask);
+        e.sw(T0, 52, R_SP); // variable multiply timing uses the pre-destination operand.
+      }
+      emit_n(e, n, cache_mask);
+      if (n.mul_arm7 && n.op == 16) {
+        e.lw(T0, 52, R_SP); e.nop();
         e.sra(T1, T0, 31); e.xor_(T0, T0, T1);
         e.addiu(T3, 0, 1);
         li(e, T1, 0xffffff00u); e.and_(T2, T0, T1);
@@ -2151,7 +2191,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
         if (!thumb && native_arm_block(is[i])) return true;
         ThumbMem m{};
-        bool candidate = thumb ? native_thumb_mem(is[i], m) :
+        bool candidate = thumb ? native_thumb_mem(is[i], m, arm9) :
             native_arm_mem(is[i], key_pc(ks[i]), m, arm9);
         if (!candidate && !thumb) candidate = native_arm_single_multi(is[i], m);
         if (candidate && (arm9 || arm7_data_slot(*jc.ctx, key_pc(ks[i]), thumb,

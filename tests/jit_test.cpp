@@ -336,7 +336,7 @@ bool compare(Machine& a, Machine& b, const Trial& t, u32 seed, bool report) {
 std::FILE* g_trace_fp = nullptr;
 void trace_cb(ds::CpuContext& c, u32 instr, void*) {
   if (!g_trace_fp) return;
-  std::fprintf(g_trace_fp, "%08x %08x cpsr=%08x", c.hot.regs[15], instr, c.hot.cpsr);
+  std::fprintf(g_trace_fp, "%08x %08x cpsr=%08x budget=%d", c.hot.regs[15], instr, c.hot.cpsr, c.hot.cycle_budget);
   for (int i = 0; i < 15; ++i) std::fprintf(g_trace_fp, " %08x", c.hot.regs[i]);
   std::fprintf(g_trace_fp, " | b13=%08x b14=%08x\n", c.bank_r13[0], c.bank_r14[0]);
 }
@@ -518,6 +518,12 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // Thumb: movs then ldr [r6 + r0] far away.
     {Cpu::ARM9, true, {0x2001, 0x5871}, {0, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, true, {0x2001, 0x5871}, {0, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // ARM7 rotates an odd-address LDRH result by 8; ARM9 does not. STRH seeds
+    // unequal bytes so the rotation is visible in the final register state.
+    {Cpu::ARM7, false, {0xE1C020B0, 0xE2800001, 0xE1D010B0}, {BUF_BASE, 0, 0x1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    {Cpu::ARM9, false, {0xE1C020B0, 0xE2800001, 0xE1D010B0}, {BUF_BASE, 0, 0x1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // shortcut: ARM7 signed-halfword loads still use the interpreter fallback.
+    {Cpu::ARM7, false, {0xE1C020B0, 0xE2800001, 0xE1D010F0}, {BUF_BASE, 0, 0x1280, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
 
     // `LDM ^` / `STM ^` -- the user-bank transfer. The interpreter switches to
     // user mode and back; the JIT inlines it in IRQ/SVC/ABT/UND, where only
@@ -746,6 +752,24 @@ void native_alu(int only = -1) {
           CHECK(run_both(mi, mj, rrx, which == Cpu::ARM9,
                          (which == Cpu::ARM9 ? 101000 : 81000) + carry, true));
         }
+        if (which == Cpu::ARM7) {
+          Trial skipped_mul{};
+          skipped_mul.cpsr = 0x40000000u; // Z=1 makes this NE multiply skip.
+          skipped_mul.code = {0x102a289c};
+          skipped_mul.regs[8] = 0xb825fc23u;
+          skipped_mul.regs[12] = 0x249e1b58u;
+          skipped_mul.regs[13] = STACK;
+          skipped_mul.require_halt = true;
+          CHECK(run_both(mi, mj, skipped_mul, false, 71020, true));
+        }
+        Trial thumb_lsl{};
+        thumb_lsl.thumb = true;
+        thumb_lsl.code = {0x006b}; // LSL r3, r5, #1: carry must come from bit 31.
+        thumb_lsl.regs[5] = 0x80000001u;
+        thumb_lsl.regs[13] = STACK;
+        thumb_lsl.require_halt = true;
+        CHECK(run_both(mi, mj, thumb_lsl, which == Cpu::ARM9,
+                       (which == Cpu::ARM9 ? 101100 : 81100), true));
         static constexpr u32 mul_rhs[] = {
             0u, 0x7fu, 0xffffff80u, 0x100u, 0xffffu,
             0x10000u, 0x01000000u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
