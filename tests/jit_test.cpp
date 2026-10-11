@@ -716,7 +716,9 @@ void native_alu(int only = -1) {
         pc_operand.require_halt = true;
         pc_operand.code = {alu_imm(4, 0, 15, 0, 8),
                            alu_imm(2, 1, 15, 0, 12),
-                           alu_imm(10, 0, 15, 0, 0) | (1u << 20)};
+                           alu_imm(10, 0, 15, 0, 0) | (1u << 20),
+                           alu_reg(13, 2, 0, 15), // MOV r2,pc
+                           alu_reg(1, 3, 1, 15, 2, 5)};
         pc_operand.regs[13] = STACK;
         CHECK(run_both(mi, mj, pc_operand, which == Cpu::ARM9,
                        which == Cpu::ARM9 ? 100900 : 80900, true));
