@@ -526,7 +526,7 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
 [padhotkeys]
 # modifier = guide
 # quit = mod+start+back
-# pause = mod+start
+# pause = back+leftshoulder    # SELECT + L1 opens the pause menu
 # fast_forward = mod++righttrigger
 # save_state = mod+rightshoulder
 # load_state = mod+leftshoulder

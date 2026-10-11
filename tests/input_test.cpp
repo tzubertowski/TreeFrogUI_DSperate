@@ -291,6 +291,16 @@ void test_menu_faces_ignore_bindings() {
   CHECK(in.take_menu_faces() == 0);
 }
 
+void test_default_select_l1_opens_pause() {
+  Rig r; Input& in = r.go();
+  T::pad(in, SDL_CONTROLLER_BUTTON_BACK, true);
+  T::pad(in, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, true);
+  const std::vector<Action> actions = in.take_actions();
+  CHECK(actions.size() == 1 && actions[0] == Action::Pause);
+  T::pad(in, SDL_CONTROLLER_BUTTON_BACK, false);
+  T::pad(in, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+}
+
 // "mod" alone: the modifier released with nothing else pressed while it was
 // held fires that hotkey; any other press in between makes it a chord run.
 void test_modifier_alone_is_a_hotkey() {
@@ -581,6 +591,7 @@ int main() {
   ds::sdl::test_fallback_press_does_not_outlive_the_frame();
   ds::sdl::test_escape_is_still_quit();
   ds::sdl::test_escape_cancels_once_quit_moves();
+  ds::sdl::test_default_select_l1_opens_pause();
   ds::sdl::test_select_start_always_quits();
   ds::sdl::test_pad_capture_swallows_keys_and_escape_cancels();
   ds::sdl::test_capture_composes_a_chord_with_the_modifier();

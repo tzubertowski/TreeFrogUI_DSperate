@@ -34,7 +34,7 @@ const char* const kActionNames[static_cast<int>(Action::Count)] = {
 const char* const kKeyHotDefaults[static_cast<int>(Action::Count)] = {
   "Escape", "p", "Tab", "none", "F5", "F7", "F3", "F2", "=", "-", "0", "F4", "F10", "F6", "F8", "f", "F9", "l", "m", "none"};
 const char* const kPadHotDefaults[static_cast<int>(Action::Count)] = {
-  "mod+start+back", "mod+start", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
+  "mod+start+back", "back+leftshoulder", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
   "none", "none", "none", "mod+back", "mod+x", "mod+y", "none", "none", "none", "none", "leftstick", "+lefttrigger"};
 
 // Controls that are neither a DS button nor a hotkey: hotkey modifier and
