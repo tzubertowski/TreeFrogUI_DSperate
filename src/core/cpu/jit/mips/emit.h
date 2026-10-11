@@ -19,8 +19,13 @@ public:
   void srl(u32 d,u32 s,u32 sh){w(0x00000002u|(s<<16)|(d<<11)|(sh<<6));}
   void rotr(u32 d,u32 s,u32 sh){w(0x00200002u|(s<<16)|(d<<11)|(sh<<6));}
   void sra(u32 d,u32 s,u32 sh){w(0x00000003u|(s<<16)|(d<<11)|(sh<<6));}
+  void sllv(u32 d,u32 t,u32 s){w(0x00000004u|(s<<21)|(t<<16)|(d<<11));}
+  void srlv(u32 d,u32 t,u32 s){w(0x00000006u|(s<<21)|(t<<16)|(d<<11));}
+  void srav(u32 d,u32 t,u32 s){w(0x00000007u|(s<<21)|(t<<16)|(d<<11));}
+  void rotrv(u32 d,u32 t,u32 s){w(0x00000046u|(s<<21)|(t<<16)|(d<<11));}
   void andi(u32 d,u32 s,u32 x){w(0x30000000u|(s<<21)|(d<<16)|(x&0xffff));}
   void lbu(u32 d,s32 o,u32 s){w(0x90000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
+  void lhu(u32 d,s32 o,u32 s){w(0x94000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void subu(u32 d,u32 s,u32 t){w(0x00000023u|(s<<21)|(t<<16)|(d<<11));}
   void sltu(u32 d,u32 s,u32 t){w(0x0000002bu|(s<<21)|(t<<16)|(d<<11));}
   void and_(u32 d,u32 s,u32 t){w(0x00000024u|(s<<21)|(t<<16)|(d<<11));}
@@ -31,6 +36,7 @@ public:
   void lw(u32 d,s32 o,u32 s){w(0x8c000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void sw(u32 d,s32 o,u32 s){w(0xac000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void sb(u32 d,s32 o,u32 s){w(0xa0000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
+  void sh(u32 d,s32 o,u32 s){w(0xa4000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void jr(u32 r){w(0x00000008u|(r<<21));} void jalr(u32 d,u32 r){w(0|(r<<21)|(d<<11)|9);}
   void nop(){w(0);}
   void j(u32 target){w(0x08000000u|((target>>2)&0x03ffffff));}

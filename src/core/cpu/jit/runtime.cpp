@@ -509,7 +509,8 @@ extern "C" u32 jit_h_fallback(CpuContext* cpu, u32 instr, u32 key) {
   }
   if (cpu->halted) cpu->hot.alerts |= ALERT_HALTED;
   g_rt.stats.instrs_fallback++;
-  if (g_rt.hist) g_rt.fallback_hist[(static_cast<u64>(cpu->which) << 32) | key_pc(key)]++;
+  if (g_rt.hist) g_rt.fallback_hist[(static_cast<u64>(cpu->which) << 32) |
+                                   (key_pc(key) | static_cast<u32>(key_thumb(key)))]++;
   if (g_rt.debug) std::fprintf(stderr, "[jit] fallback %08x %08x -> r15 %08x cpsr %08x budget %d halted %d jumped %d\n", key_pc(key), instr, cpu->hot.regs[15], cpu->hot.cpsr, cpu->hot.cycle_budget, cpu->halted, cpu->jumped);
   return cpu->jumped ? 1 : 0;
 }
@@ -901,11 +902,14 @@ void report(std::FILE* out) {
   std::fprintf(out, "[jit] hottest fallbacks (cpu pc instr count):\n");
   for (size_t i = 0; i < v.size() && i < 16; ++i) {
     const Cpu c = static_cast<Cpu>(v[i].first >> 32);
-    const u32 pc = static_cast<u32>(v[i].first);
+    const u32 raw_pc = static_cast<u32>(v[i].first);
+    const bool thumb = raw_pc & 1u;
+    const u32 pc = raw_pc & ~1u;
     CpuContext& ctx = *g_rt.cpus[c == Cpu::ARM9 ? 0 : 1].ctx;
     u32 instr = 0;
-    if (u8* p = ctx.page_table.read_ptr(pc)) std::memcpy(&instr, p, 4);
-    std::fprintf(out, "[jit]   arm%d %08x %08x %llu\n", c == Cpu::ARM9 ? 9 : 7, pc, instr, (unsigned long long)v[i].second);
+    if (u8* p = ctx.page_table.read_ptr(pc)) std::memcpy(&instr, p, thumb ? 2 : 4);
+    std::fprintf(out, "[jit]   arm%d %08x%s %08x %llu\n", c == Cpu::ARM9 ? 9 : 7,
+                 pc, thumb ? "t" : "", instr, (unsigned long long)v[i].second);
   }
 }
 

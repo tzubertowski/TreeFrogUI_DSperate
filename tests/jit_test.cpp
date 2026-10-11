@@ -864,6 +864,7 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   Machine& mj = which == Cpu::ARM9 ? mj9 : mj7;
   const bool a9 = which == Cpu::ARM9;
   setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
+  if (a9) setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
   t.thumb = true;
@@ -883,6 +884,90 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
         results[6] == 0x81 && results[7] == 0x81);
+  if (a9) {
+    Trial mem{};
+    mem.thumb = true;
+    mem.require_halt = true;
+    mem.code = {0x2080, 0x7008, 0x56CA, 0x604A, 0x2001, 0x03C0,
+                0x8048, 0x2302, 0x5ECA, 0x608A, 0x5ACA, 0x60CA,
+                0x230D, 0x58CA, 0x614A, 0x2001, 0x9001, 0x9A01, 0x618A};
+    for (int r = 0; r < 15; ++r) mem.regs[r] = 0;
+    mem.regs[1] = BUF_BASE;
+    mem.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mem, true, 94004, true));
+    u32 memory_results[7]{};
+    std::memcpy(memory_results, mj.host(BUF_BASE), sizeof memory_results);
+    CHECK(memory_results[1] == 0xffffff80u); // LDRSB
+    CHECK(memory_results[2] == 0xffff8000u); // LDRSH
+    CHECK(memory_results[3] == 0x00008000u); // LDRH
+    CHECK(memory_results[5] == 0x00000080u); // unaligned LDR rotation
+    CHECK(memory_results[6] == 0x00000001u); // SP-relative store/load roundtrip
+    Trial tagged{};
+    tagged.thumb = true;
+    tagged.require_halt = true;
+    tagged.code = {0x205A, 0x7008, 0x5CCA, 0x6032};
+    for (int r = 0; r < 15; ++r) tagged.regs[r] = 0;
+    tagged.regs[1] = CODE_BASE + 0x800;
+    tagged.regs[6] = BUF_BASE;
+    tagged.regs[13] = STACK;
+    CHECK(run_both(mi, mj, tagged, true, 94005, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == 0x5Au); // tagged/code memory goes through SMC helpers
+    Trial arm_mem{};
+    arm_mem.require_halt = true;
+    arm_mem.code = {0xE3A00080, 0xE5C10000, 0xE5D12000, 0xE5812004,
+                    0xE5913004, 0xE5813008, 0xE3A05001, 0xE7916105,
+                    0xE5816010, 0xE3500000, 0x05914000, 0xE581400C};
+    for (int r = 0; r < 15; ++r) arm_mem.regs[r] = 0;
+    arm_mem.regs[1] = BUF_BASE;
+    arm_mem.regs[4] = 0x55;
+    arm_mem.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arm_mem, true, 94006, true));
+    u32 arm_memory_results[5]{};
+    std::memcpy(arm_memory_results, mj.host(BUF_BASE), sizeof arm_memory_results);
+    CHECK(arm_memory_results[1] == 0x80u);
+    CHECK(arm_memory_results[2] == 0x80u);
+    CHECK(arm_memory_results[3] == 0x55u); // failed EQ LDR did not write r4
+    CHECK(arm_memory_results[4] == 0x80u); // shifted register-offset LDR/STR
+    Trial arm_half{};
+    arm_half.require_halt = true;
+    arm_half.code = {0xE3A00001, 0xE1A00780, 0xE1C100B2, 0xE1D120B2,
+                     0xE5812004, 0xE1D130D3, 0xE5813008, 0xE1D140F2,
+                     0xE581400C};
+    for (int r = 0; r < 15; ++r) arm_half.regs[r] = 0;
+    arm_half.regs[1] = BUF_BASE;
+    arm_half.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arm_half, true, 94007, true));
+    std::memcpy(arm_memory_results, mj.host(BUF_BASE), sizeof arm_memory_results);
+    CHECK(arm_memory_results[1] == 0x00008000u);
+    CHECK(arm_memory_results[2] == 0xffffff80u);
+    CHECK(arm_memory_results[3] == 0xffff8000u);
+    for (u32 amount : {0u, 1u, 32u, 255u}) {
+      Trial reg_shift{};
+      reg_shift.require_halt = true;
+      reg_shift.code = {0xE1A02013, 0xE1A04035, 0xE1A06057, 0xE1A08079,
+                        0xE5812000, 0xE5814004, 0xE5816008, 0xE581800C};
+      for (int r = 0; r < 15; ++r) reg_shift.regs[r] = 0;
+      reg_shift.regs[0] = amount;
+      reg_shift.regs[1] = BUF_BASE;
+      reg_shift.regs[3] = reg_shift.regs[5] = reg_shift.regs[7] =
+          reg_shift.regs[9] = 0x80000001u;
+      reg_shift.regs[13] = STACK;
+      CHECK(run_both(mi, mj, reg_shift, true, 94009 + amount, true));
+    }
+    Trial post{};
+    post.require_halt = true;
+    post.code = {0xE3A00066, 0xE5810000, 0xE4912004,
+                 0xE5812000, 0xE5811004};
+    for (int r = 0; r < 15; ++r) post.regs[r] = 0;
+    post.regs[1] = BUF_BASE;
+    post.regs[13] = STACK;
+    CHECK(run_both(mi, mj, post, true, 94008, true));
+    std::memcpy(arm_memory_results, mj.host(BUF_BASE), sizeof arm_memory_results);
+    CHECK(arm_memory_results[0] == 0x66u);
+    CHECK(arm_memory_results[1] == 0x66u);
+    CHECK(arm_memory_results[2] == BUF_BASE + 4); // post-index base writeback
+  }
   Trial branch{};
   branch.thumb = true;
   branch.require_halt = true;
@@ -1070,6 +1155,7 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(result == arithmetic[i].output);
   }
   unsetenv("DS_MIPS_NATIVE_BRANCH");
+  unsetenv("DS_MIPS_NATIVE_MEM");
   jit::detach(mj.nds);
 }
 #endif

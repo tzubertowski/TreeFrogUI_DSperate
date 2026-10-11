@@ -12,13 +12,19 @@
 
 extern "C" ds::u32 ds_jit_mips_fallback_block(ds::CpuContext *, const ds::u32 *,
                                               const ds::u32 *, ds::u32);
+extern "C" ds::u32 jit_h_ld8(ds::CpuContext *, ds::u32);
+extern "C" ds::u32 jit_h_ld16(ds::CpuContext *, ds::u32);
+extern "C" ds::u32 jit_h_ld32(ds::CpuContext *, ds::u32);
+extern "C" void jit_h_st8(ds::CpuContext *, ds::u32, ds::u32);
+extern "C" void jit_h_st16(ds::CpuContext *, ds::u32, ds::u32);
+extern "C" void jit_h_st32(ds::CpuContext *, ds::u32, ds::u32);
 namespace {
 using ds::CpuContext;
 using ds::s32;
 using ds::u32;
 using ds::arm::AOp;
 using ds::jit::MipsEmitter;
-constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, R_BUDGET = 23;
+constexpr u32 R_CTX = 16, R_SP = 29, R_FP = 30, R_RA = 31, R_BUDGET = 23;
 constexpr u32 T0 = 8, T1 = 9, T2 = 10, T3 = 11, R_GUEST_PC = 24;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
 using ds::jit::CACHE_COUNT;
@@ -27,9 +33,95 @@ using ds::jit::CACHE_FRAME;
 using ds::jit::CACHE_SAVED;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond;
-  bool im, setflags, carry_valid, carry, carry_dynamic;
+  bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift;
   ds::u8 shift_type;
 };
+struct ThumbMem {
+  u32 rd = 0, rn = 0, rm = 0, imm = 0, width = 0;
+  u32 cond = 14, shift = 0, shift_type = 0, base = 0, offset = 0;
+  bool reg = false, load = false, sign = false, arm = false;
+  bool neg = false, base_const = false, offset_const = false;
+  bool writeback = false, post = false;
+};
+static bool native_thumb_mem(u32 x, ThumbMem &m) {
+  const u32 h = static_cast<ds::u16>(x);
+  if ((h & 0xfc00u) == 0x5000u) {
+    static constexpr ds::u8 widths[8] = {4, 2, 1, 1, 4, 2, 1, 2};
+    const u32 op = (h >> 9) & 7;
+    m.width = widths[op];
+    m.load = op >= 3;
+    m.sign = op == 3 || op == 7;
+    m.reg = true;
+    m.rm = (h >> 6) & 7;
+    m.rn = (h >> 3) & 7;
+    m.rd = h & 7;
+    return true;
+  }
+  if ((h & 0xe000u) == 0x6000u) {
+    const bool byte = h & 0x1000u;
+    m.width = byte ? 1 : 4;
+    m.load = h & 0x0800u;
+    m.rn = (h >> 3) & 7;
+    m.rd = h & 7;
+    m.imm = ((h >> 6) & 31) * m.width;
+    return true;
+  }
+  if ((h & 0xf000u) == 0x8000u) {
+    m.width = 2;
+    m.load = h & 0x0800u;
+    m.rn = (h >> 3) & 7;
+    m.rd = h & 7;
+    m.imm = ((h >> 6) & 31) * 2;
+    return true;
+  }
+  if ((h & 0xf000u) == 0x9000u) {
+    m.width = 4;
+    m.load = h & 0x0800u;
+    m.rn = 13;
+    m.rd = (h >> 8) & 7;
+    m.imm = (h & 255) * 4;
+    return true;
+  }
+  return false;
+}
+static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m) {
+  const AOp op = ds::arm::decode_arm(x);
+  const bool extra = op == AOp::LdrStrHImm || op == AOp::LdrStrHReg;
+  if ((!extra && op != AOp::LdrStrImm && op != AOp::LdrStrReg) ||
+      (x & (1u << 21))) return false; // unprivileged post-index is not covered
+  m.arm = true;
+  m.cond = x >> 28;
+  m.load = x & (1u << 20);
+  const u32 sh = (x >> 5) & 3;
+  m.width = extra ? (sh == 2 ? 1 : 2) : (x & (1u << 22)) ? 1 : 4;
+  m.sign = extra && m.load && sh != 1;
+  m.neg = !(x & (1u << 23));
+  m.post = !(x & (1u << 24));
+  m.writeback = m.post;
+  m.rn = (x >> 16) & 15;
+  m.rd = (x >> 12) & 15;
+  m.base_const = m.rn == 15;
+  if (m.rd == 15 || m.cond == 15 || (m.base_const && m.post) ||
+      (m.writeback && m.load && m.rd == m.rn) ||
+      (extra && ((!m.load && sh != 1) || sh == 0)))
+    return false; // LDRD/STRD are intentionally left to the interpreter.
+  m.base = pc + 8;
+  if (op == AOp::LdrStrImm || op == AOp::LdrStrHImm) {
+    m.imm = extra ? (((x >> 4) & 0xf0u) | (x & 15u)) : (x & 0xfffu);
+    return true;
+  }
+  if (!extra && (x & (1u << 4))) return false; // register-specified shift
+  m.reg = true;
+  m.rm = x & 15;
+  m.offset_const = m.rm == 15;
+  m.offset = pc + 8;
+  if (!extra) {
+    m.shift_type = (x >> 5) & 3;
+    m.shift = (x >> 7) & 31;
+    if (m.shift_type == 3 && !m.shift) return false; // RRX depends on CPSR.C
+  }
+  return true;
+}
 static u32 ai(u32 x) {
   u32 v = x & 255, n = ((x >> 8) & 15) * 2;
   return n ? (v >> n) | (v << (32 - n)) : v;
@@ -37,7 +129,8 @@ static u32 ai(u32 x) {
 static bool native(u32 x, N &n, bool shifts) {
   AOp a = ds::arm::decode_arm(x);
   n.cond = x >> 28;
-  if (n.cond == 15 || (a != AOp::DpImm && a != AOp::DpImmShift))
+  if (n.cond == 15 || (a != AOp::DpImm && a != AOp::DpImmShift &&
+                       a != AOp::DpRegShift))
     return false;
   n.op = (x >> 21) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
@@ -69,12 +162,21 @@ static bool native(u32 x, N &n, bool shifts) {
       n.op != 5 && n.op != 6 && n.op != 7 &&
       n.op != 10 && n.op != 11)
     return false;
+  if (a == AOp::DpRegShift && (n.op != 13 || n.setflags))
+    return false; // register-controlled shifts without flags only
   if (a == AOp::DpImm) {
     n.im = true;
     n.imm = ai(x);
     n.carry_valid = ((x >> 8) & 15) != 0;
     n.carry = n.imm >> 31;
     return true;
+  }
+  if (a == AOp::DpRegShift) {
+    n.reg_shift = true;
+    n.rn = (x >> 8) & 15; // Rs supplies the register shift amount for MOV.
+    if (n.rn == 15) return false;
+    n.shift_type = (x >> 5) & 3;
+    return shifts;
   }
   if ((x & 0x10) || (!shifts && ((x >> 4) & 255)))
     return false;
@@ -227,6 +329,174 @@ static u32 arm9_code_cost(const CpuContext &c, u32 pc, bool thumb) {
   return thumb && (fetch_pc & 2u) ? 0 :
          t == 255 ? (!(fetch_pc & 31u) ? 3 : 1) : t;
 }
+static void emit_arm9_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
+                                 bool thumb, u32 width, bool store) {
+  const u32 nc = arm9_code_cost(c, pc, thumb);
+  const u32 slot = (store ? 4 : 0) + (width == 4 ? 2 : 1);
+  e.lw(T2, offsetof(CpuContext, timing9), R_CTX);
+  e.nop();
+  if (width == 4) {
+    e.srl(T3, R_FP, 2);
+    e.sll(T3, T3, 2);
+  } else if (width == 2) {
+    e.srl(T3, R_FP, 1);
+    e.sll(T3, T3, 1);
+  } else {
+    e.move(T3, R_FP);
+  }
+  e.srl(T3, T3, 12);
+  e.sll(T3, T3, 3);
+  e.addu(T2, T2, T3);
+  e.lbu(T2, slot, T2);
+  e.nop();
+  if (nc <= 6) {
+    if (nc) {
+      e.addiu(T1, T2, -static_cast<s32>(nc));
+      li(e, T0, nc);
+      e.sltu(T3, T2, T0);
+      e.xori(T3, T3, 1);
+      e.subu(T3, 0, T3);
+      e.and_(T2, T1, T3);
+    }
+  } else {
+    e.addiu(T1, T2, -6);
+    e.addiu(T0, 0, 6);
+    e.sltu(T3, T2, T0);
+    e.xori(T3, T3, 1);
+    e.subu(T3, 0, T3);
+    e.and_(T2, T1, T3);
+  }
+  e.subu(R_BUDGET, R_BUDGET, T2);
+}
+static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask);
+static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask);
+static void spill_cached(MipsEmitter &e, u32 cache_mask);
+static void reload_cached(MipsEmitter &e, u32 cache_mask);
+static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
+                           bool thumb, const ThumbMem &m, u32 cache_mask,
+                           std::vector<size_t> &ex) {
+  // The direct path is deliberately ARM9-only. Tagged/MMIO/write-protected
+  // pages retain the existing helper semantics, including SMC and device IO.
+  if (m.base_const) li(e, T0, m.base);
+  else getr(e, T0, m.rn, cache_mask);
+  bool have_offset = false;
+  if (m.reg) {
+    if (m.offset_const) li(e, T1, m.offset);
+    else getr(e, T1, m.rm, cache_mask);
+    if (m.arm && (m.shift || m.shift_type != 0)) {
+      if (m.shift_type == 0) e.sll(T1, T1, m.shift);
+      else if (m.shift_type == 1) {
+        if (m.shift) e.srl(T1, T1, m.shift);
+        else e.move(T1, 0); // ARM LSR #0 means LSR #32.
+      }
+      else if (m.shift_type == 2) e.sra(T1, T1, m.shift ? m.shift : 31);
+      else e.rotr(T1, T1, m.shift);
+    }
+    have_offset = true;
+  } else if (m.arm) {
+    li(e, T1, m.imm);
+    have_offset = true;
+  }
+  if (m.post) {
+    if (m.neg) e.subu(T3, T0, T1);
+    else e.addu(T3, T0, T1);
+    e.sw(T3, 52, R_SP);
+  } else if (m.arm && have_offset) {
+    if (m.neg) e.subu(T0, T0, T1);
+    else e.addu(T0, T0, T1);
+    if (m.writeback) e.sw(T0, 52, R_SP);
+  } else if (m.reg) {
+    if (m.neg) e.subu(T0, T0, T1);
+    else e.addu(T0, T0, T1);
+  } else if (m.imm) {
+    e.addiu(T0, T0, m.neg ? -static_cast<s32>(m.imm) : static_cast<s32>(m.imm));
+  }
+  e.move(R_FP, T0);                    // original EA survives helper calls
+  if (m.width == 4) { e.srl(T0, T0, 2); e.sll(T0, T0, 2); }
+  else if (m.width == 2) { e.srl(T0, T0, 1); e.sll(T0, T0, 1); }
+  e.srl(T1, T0, 11);                  // page-table index
+  e.sll(T1, T1, 2);
+  e.load_ptr(T2, c.page_table.raw());
+  e.addu(T2, T2, T1);
+  e.lw(T1, 0, T2);
+  e.nop();
+  if (m.load) {
+    e.srl(T2, T1, 30); e.andi(T2, T2, 1); // SPECIAL pages need helper
+  } else {
+    e.srl(T2, T1, 30);                    // CODE/SPECIAL stores need helper
+  }
+  const size_t tagged = e.bnez(T2); e.nop();
+  e.sll(T2, T1, 2);                       // remove both tag bits
+  const size_t unmapped = e.beq(T2, 0); e.nop();
+  e.addu(T2, T2, T0);                     // mapped host address
+  if (m.load) {
+    if (m.width == 1) { e.lbu(T1, 0, T2); e.nop(); }
+    else if (m.width == 2) { e.lhu(T1, 0, T2); e.nop(); }
+    else { e.lw(T1, 0, T2); e.nop(); }
+  } else {
+    getr(e, T3, m.rd, cache_mask);
+    if (m.width == 1) e.sb(T3, 0, T2);
+    else if (m.width == 2) e.sh(T3, 0, T2);
+    else e.sw(T3, 0, T2);
+  }
+  const size_t fast_done = e.b(); e.nop();
+  const size_t slow = e.size();
+  e.patch_branch(tagged, slow);
+  e.patch_branch(unmapped, slow);
+  auto loaded = [&] {
+    if (!m.load) return;
+    if (m.width == 4) {
+      e.andi(T3, R_FP, 3); e.sll(T3, T3, 3);
+      e.move(T0, T1); e.srlv(T1, T0, T3);
+      e.subu(T3, 0, T3); e.sllv(T2, T0, T3); e.or_(T1, T1, T2);
+    } else if (m.sign) {
+      e.sll(T1, T1, m.width == 1 ? 24 : 16);
+      e.sra(T1, T1, m.width == 1 ? 24 : 16);
+    }
+    putr(e, m.rd, T1, cache_mask);
+  };
+  auto writeback = [&] {
+    if (!m.writeback) return;
+    e.lw(T3, 52, R_SP); e.nop();
+    putr(e, m.rn, T3, cache_mask);
+  };
+  e.move(4, R_CTX);
+  e.move(5, R_FP);
+  if (m.load) {
+    const void *fn = m.width == 1 ? reinterpret_cast<const void *>(&jit_h_ld8) :
+                     m.width == 2 ? reinterpret_cast<const void *>(&jit_h_ld16) :
+                                    reinterpret_cast<const void *>(&jit_h_ld32);
+    e.load_ptr(25, fn);
+  } else {
+    getr(e, 6, m.rd, cache_mask);
+    const void *fn = m.width == 1 ? reinterpret_cast<const void *>(&jit_h_st8) :
+                     m.width == 2 ? reinterpret_cast<const void *>(&jit_h_st16) :
+                                    reinterpret_cast<const void *>(&jit_h_st32);
+    e.load_ptr(25, fn);
+  }
+  spill_cached(e, cache_mask);
+  e.sw(R_GUEST_PC, OR + 60, R_CTX);
+  e.sw(R_BUDGET, OB, R_CTX);
+  e.jalr(R_RA, 25); e.nop();
+  if (m.load) e.move(T1, 2);
+  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  reload_cached(e, cache_mask);
+  loaded();
+  writeback();
+  emit_arm9_data_extra(e, c, pc, thumb, m.width, !m.load);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  // Slow operations may have raised scheduler alerts; return at this boundary.
+  ex.push_back(e.b()); e.nop();
+  e.patch_branch(fast_done, e.size());
+  loaded();
+  writeback();
+  emit_arm9_data_extra(e, c, pc, thumb, m.width, !m.load);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  // Dynamic timing tables mean a timing update can affect any page used here.
+}
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb) {
   u32 cost;
   if (c.which == ds::Cpu::ARM9)
@@ -299,25 +569,56 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     li(e, T1, n.imm);
   else {
     getr(e, T1, n.rm, cache_mask);
+    if (n.reg_shift) {
+      getr(e, T3, n.rn, cache_mask);
+      e.andi(T3, T3, 255);
+      if (n.shift_type == 0 || n.shift_type == 1) {
+        if (n.shift_type == 0) e.sllv(T1, T1, T3);
+        else e.srlv(T1, T1, T3);
+        const size_t in_range = e.beq(T3, 0); e.nop();
+        // A zero low-five-bit count is either zero or a multiple of 32;
+        // only the latter saturates LSL/LSR to zero.
+        li(e, T2, 32);
+        e.sltu(T2, T3, T2);
+        const size_t small = e.bnez(T2); e.nop();
+        e.move(T1, 0);
+        const size_t done = e.b(); e.nop();
+        e.patch_branch(in_range, e.size());
+        // Counts 1..31 already produced their result.  For count 32, force 0.
+        e.patch_branch(small, e.size());
+        e.patch_branch(done, e.size());
+      } else if (n.shift_type == 2) {
+        e.srav(T1, T1, T3);
+        li(e, T2, 32);
+        e.sltu(T2, T3, T2);
+        const size_t small = e.bnez(T2); e.nop();
+        e.sra(T1, T1, 31);
+        e.patch_branch(small, e.size());
+      } else {
+        e.rotrv(T1, T1, T3);
+      }
+    }
     if (n.carry_dynamic) {
       const u32 bit = n.shift_type == 0 ? 32 - n.shift :
                       n.shift ? n.shift - 1 : 31;
       e.srl(T3, T1, bit);
       e.andi(T3, T3, 1);
     }
-    if (n.shift) {
-      if (n.shift_type == 1)
-        e.srl(T1, T1, n.shift);
-      else if (n.shift_type == 2)
-        e.sra(T1, T1, n.shift);
-      else if (n.shift_type == 3)
-        e.rotr(T1, T1, n.shift);
-      else
-        e.sll(T1, T1, n.shift);
-    } else if (n.shift_type == 1) {
-      e.addiu(T1, 0, 0); // LSR #32
-    } else if (n.shift_type == 2) {
-      e.sra(T1, T1, 31); // ASR #32
+    if (!n.reg_shift) {
+      if (n.shift) {
+        if (n.shift_type == 1)
+          e.srl(T1, T1, n.shift);
+        else if (n.shift_type == 2)
+          e.sra(T1, T1, n.shift);
+        else if (n.shift_type == 3)
+          e.rotr(T1, T1, n.shift);
+        else
+          e.sll(T1, T1, n.shift);
+      } else if (n.shift_type == 1) {
+        e.addiu(T1, 0, 0); // LSR #32
+      } else if (n.shift_type == 2) {
+        e.sra(T1, T1, 31); // ASR #32
+      }
     }
   }
   switch (n.op) {
@@ -566,6 +867,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                           (arm9 || (native_arm7_env && std::strcmp(native_arm7_env, "0")));
   const char *branch_env = std::getenv("DS_MIPS_NATIVE_BRANCH");
   const bool use_native_branch = use_native && branch_env && std::strcmp(branch_env, "0");
+  const char *mem_env = std::getenv("DS_MIPS_NATIVE_MEM");
+  const bool use_native_mem = use_native && arm9 && mem_env &&
+                              std::strcmp(mem_env, "0");
   const char *limit_env = std::getenv("DS_MIPS_NATIVE_LIMIT");
   const u32 native_limit = limit_env ? std::strtoul(limit_env, nullptr, 10) : 0;
   const bool native_trace = std::getenv("DS_MIPS_NATIVE_TRACE") &&
@@ -594,15 +898,25 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   if (is.empty())
     return false;
   u32 candidates = 0, cache_mask = 0;
-  for (u32 x : is) {
+  for (u32 i = 0; i < is.size(); ++i) {
+    const u32 x = is[i];
     N n{};
     if (use_native && (!native_limit || candidates < native_limit) &&
         native_insn(x, thumb, n)) {
       ++candidates;
-      if (n.op != 13 && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
+    if ((n.op != 13 || n.reg_shift) && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
       if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
       if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11 && n.rd < CACHE_COUNT)
         cache_mask |= 1u << n.rd;
+    }
+    ThumbMem m{};
+    const bool mem_candidate = thumb ? native_thumb_mem(x, m) :
+                                      native_arm_mem(x, key_pc(ks[i]), m);
+    if (use_native_mem && (!native_limit || candidates < native_limit) && mem_candidate) {
+      ++candidates;
+      if (m.rn < CACHE_COUNT) cache_mask |= 1u << m.rn;
+      if (m.reg && m.rm < CACHE_COUNT) cache_mask |= 1u << m.rm;
+      if (m.rd < CACHE_COUNT) cache_mask |= 1u << m.rd;
     }
   }
   const bool cache_regs = cache_mask != 0;
@@ -611,7 +925,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   e.addiu(R_SP, R_SP, -static_cast<s32>(has_native ? CACHE_FRAME : 24));
   e.sw(R_CTX, 16, R_SP);
   e.sw(R_RA, 20, R_SP);
-  if (has_native) e.sw(R_BUDGET, 48, R_SP);
+  if (has_native) {
+    e.sw(R_BUDGET, 48, R_SP);
+    e.sw(R_FP, 56, R_SP);
+  }
   if (cache_regs) {
     for (u32 r = 0; r < CACHE_COUNT; ++r)
       if (cache_mask & (1u << r)) e.sw(CACHE_FIRST + r, CACHE_SAVED + 4 * r, R_SP);
@@ -792,6 +1109,28 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    ThumbMem mem{};
+    const bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
+                                   native_arm_mem(is[q], pc, mem);
+    if (use_native_mem && (!native_limit || native_count < native_limit) && native_mem) {
+      note_code_dep(b, pc + (thumb ? 4 : 8));
+      b.dep_overflow = true; // the access-time row can vary with the guest address
+      emit_timing(e, *jc.ctx, pc, thumb);
+      std::vector<size_t> pred_skip;
+      if (!thumb) emit_skip_if_false(e, mem.cond, pred_skip);
+      emit_thumb_mem(e, *jc.ctx, pc, thumb, mem, cache_mask, ex);
+      if (!thumb && !pred_skip.empty()) {
+        const size_t executed = e.b(); e.nop();
+        for (size_t p : pred_skip) e.patch_branch(p, e.size());
+        e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+        ex.push_back(e.blez(R_BUDGET)); e.nop();
+        e.patch_branch(executed, e.size());
+      }
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     if (use_native && arm9 && thumb &&
         (!native_limit || native_count < native_limit) &&
         (is[q] & 0xf800u) == 0x4800u) {
@@ -837,6 +1176,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
+      if (n.reg_shift) e.addiu(R_BUDGET, R_BUDGET, -1);
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
       // Native timing must leave at the same boundary as the interpreter:
@@ -914,7 +1254,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.patch_branch(x.br, done);
   e.lw(R_CTX, 16, R_SP);
   e.lw(R_RA, 20, R_SP);
-  if (has_native) e.lw(R_BUDGET, 48, R_SP);
+  if (has_native) {
+    e.lw(R_BUDGET, 48, R_SP);
+    e.lw(R_FP, 56, R_SP);
+  }
   if (cache_regs) {
     for (u32 r = 0; r < CACHE_COUNT; ++r) {
       if (!(cache_mask & (1u << r))) continue;
