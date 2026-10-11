@@ -19,7 +19,7 @@ using ds::u32;
 using ds::arm::AOp;
 using ds::jit::MipsEmitter;
 constexpr u32 R_CTX = 16, R_SP = 29, R_RA = 31, R_BUDGET = 23;
-constexpr u32 T0 = 8, T1 = 9, T2 = 10, R_GUEST_PC = 24;
+constexpr u32 T0 = 8, T1 = 9, T2 = 10, T3 = 11, R_GUEST_PC = 24;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
 using ds::jit::CACHE_COUNT;
 using ds::jit::CACHE_FIRST;
@@ -27,7 +27,7 @@ using ds::jit::CACHE_FRAME;
 using ds::jit::CACHE_SAVED;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond;
-  bool im, setflags, carry_valid, carry;
+  bool im, setflags, carry_valid, carry, carry_dynamic;
   ds::u8 shift_type;
 };
 static u32 ai(u32 x) {
@@ -58,8 +58,7 @@ static bool native(u32 x, N &n, bool shifts) {
   // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
   // forms were the repeatable source of SF3000 crashes.
   if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 8 && n.op != 9 &&
-      n.op != 12 && n.op != 13 &&
-      !(force_sub && n.op == 2))
+      n.op != 12 && n.op != 13 && !(force_sub && n.op == 2))
     return false;
   const bool test_op = n.op == 8 || n.op == 9;
   const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
@@ -85,6 +84,35 @@ static bool native(u32 x, N &n, bool shifts) {
   return n.shift_type == 0 ||
          (n.shift && n.shift_type == 3) ||
          (n.shift && (n.shift_type == 1 || n.shift_type == 2));
+}
+static bool native_thumb(u32 x, N &n) {
+  const ds::u16 h = static_cast<ds::u16>(x);
+  const bool mov_imm = (h & 0xf800) == 0x2000;
+  const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
+  if (!mov_imm && !imm_shift) return false;
+  const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
+  if (op_env && std::strcmp(op_env, "all") != 0 &&
+      std::strtoul(op_env, nullptr, 10) != 13)
+    return false;
+  n.op = 13;
+  n.setflags = true;
+  n.cond = 14;
+  if (mov_imm) {
+    n.rd = (h >> 8) & 7;
+    n.imm = h & 255;
+    n.im = true;
+  } else {
+    n.rd = h & 7;
+    n.rm = (h >> 3) & 7;
+    n.shift = (h >> 6) & 31;
+    n.shift_type = (h >> 11) & 3;
+    n.carry_dynamic = n.shift_type != 0;
+    n.carry_valid = n.carry_dynamic;
+  }
+  return true;
+}
+static bool native_insn(u32 x, bool thumb, N &n) {
+  return thumb ? native_thumb(x, n) : native(x, n, true);
 }
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
   if (cond == 14) return;
@@ -140,13 +168,15 @@ static void li(MipsEmitter &e, u32 r, u32 v) {
   e.lui(r, v >> 16);
   e.ori(r, r, v);
 }
-static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc) {
+static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb) {
   u32 cost;
   if (c.which == ds::Cpu::ARM9) {
-    const ds::u8 t = c.timing9[(pc + 8) >> 12][0];
-    cost = t == 255 ? (!((pc + 8) & 31u) ? 3 : 1) : t;
+    const u32 fetch_pc = pc + (thumb ? 4 : 8);
+    const ds::u8 t = c.timing9[fetch_pc >> 12][0];
+    cost = thumb && (fetch_pc & 2u) ? 0 :
+           t == 255 ? (!(fetch_pc & 31u) ? 3 : 1) : t;
   } else {
-    cost = c.timing7[pc >> 15][3];
+    cost = c.timing7[pc >> 15][thumb ? 1 : 3];
   }
   e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(cost));
 }
@@ -196,6 +226,12 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     li(e, T1, n.imm);
   else {
     getr(e, T1, n.rm, cache_mask);
+    if (n.carry_dynamic) {
+      const u32 bit = n.shift_type == 0 ? 32 - n.shift :
+                      n.shift ? n.shift - 1 : 31;
+      e.srl(T3, T1, bit);
+      e.andi(T3, T3, 1);
+    }
     if (n.shift) {
       if (n.shift_type == 1)
         e.srl(T1, T1, n.shift);
@@ -205,6 +241,10 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
         e.rotr(T1, T1, n.shift);
       else
         e.sll(T1, T1, n.shift);
+    } else if (n.shift_type == 1) {
+      e.addiu(T1, 0, 0); // LSR #32
+    } else if (n.shift_type == 2) {
+      e.sra(T1, T1, 31); // ASR #32
     }
   }
   switch (n.op) {
@@ -255,7 +295,13 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     li(e, T0, 0x40000000u);
     e.or_(T1, T1, T0);
     e.patch_branch(nz, e.size());
-    if (n.carry_valid && n.carry) {
+    if (n.carry_dynamic) {
+      const size_t no_carry = e.beq(T3, 0);
+      e.nop();
+      li(e, T0, 0x20000000u);
+      e.or_(T1, T1, T0);
+      e.patch_branch(no_carry, e.size());
+    } else if (n.carry_valid && n.carry) {
       li(e, T0, 0x20000000u);
       e.or_(T1, T1, T0);
     }
@@ -329,8 +375,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   u32 candidates = 0, cache_mask = 0;
   for (u32 x : is) {
     N n{};
-    if (use_native && !thumb && (!native_limit || candidates < native_limit) &&
-        native(x, n, true)) {
+    if (use_native && (!native_limit || candidates < native_limit) &&
+        native_insn(x, thumb, n)) {
       ++candidates;
       if (n.op != 13 && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
       if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
@@ -353,7 +399,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   if (has_native) {
     e.lw(R_BUDGET, OB, R_CTX);
     e.nop();
-    li(e, R_GUEST_PC, start + 8);
+    li(e, R_GUEST_PC, start + (thumb ? 4 : 8));
   }
   if (cache_regs)
     reload_cached(e, cache_mask);
@@ -394,7 +440,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       for (size_t p : not_taken) e.patch_branch(p, e.size());
       li(e, T0, pc + 12);
       e.move(R_GUEST_PC, T0);
-      emit_timing(e, *jc.ctx, pc);
+      emit_timing(e, *jc.ctx, pc, false);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
       ++native_count;
@@ -402,20 +448,20 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     N n{};
-    if (!thumb && use_native && (!native_limit || native_count < native_limit) &&
-        native(is[q], n, true)) {
+    if (use_native && (!native_limit || native_count < native_limit) &&
+        native_insn(is[q], thumb, n)) {
       if (native_trace)
         std::fprintf(stderr,
                      "[mips-jit] native pc=%08x ins=%08x op=%u rd=%u rn=%u rm=%u %s\n",
                      key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
                      n.im ? "imm" : "reg");
-      note_code_dep(b, key_pc(ks[q]) + 8);
-      emit_timing(e, *jc.ctx, key_pc(ks[q]));
+      note_code_dep(b, key_pc(ks[q]) + (thumb ? 4 : 8));
+      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb);
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
       for (size_t p : skip) e.patch_branch(p, e.size());
-      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
       // Native timing must leave at the same boundary as the interpreter:
       // budget exhaustion at exactly zero is already out of budget.
       ex.push_back(e.blez(R_BUDGET));
@@ -430,8 +476,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     B x{};
     u32 z = q;
     while (q < is.size() &&
-           !(!thumb && use_native && (!native_limit || native_count < native_limit) &&
-             native(is[q], n, true))) {
+           !(use_native && (!native_limit || native_count < native_limit) &&
+             native_insn(is[q], thumb, n))) {
       x.i.push_back(is[q]);
       x.k.push_back(ks[q++]);
     }
