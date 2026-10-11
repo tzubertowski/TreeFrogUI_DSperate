@@ -916,6 +916,25 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
+  // Cover immediate/register-offset PC loads, including the ARM9 native path.
+  static constexpr u32 pc_load[] = {0xE51FF004, 0xE51FF003, 0xE79FF10C};
+  static constexpr u32 pc_literal[] = {HALT_STUB, (HALT_STUB << 8) | (HALT_STUB >> 24), HALT_STUB};
+  static constexpr u32 pc_load_code[][4] = {
+      {pc_load[0], pc_literal[0], 0xEAFFFFFE, 0},
+      {pc_load[1], pc_literal[1], 0xEAFFFFFE, 0},
+      {pc_load[2], 0xEAFFFFFE, 0xEAFFFFFE, pc_literal[2]},
+  };
+  for (u32 i = 0; i < 3; ++i) {
+    t = Trial{};
+    t.require_halt = true; t.regs[12] = 1; t.regs[13] = STACK;
+    t.code.assign(pc_load_code[i], pc_load_code[i] + (i == 2 ? 4 : 3));
+    CHECK(run_both(mi, mj, t, a9, (a9 ? 91022 : 71022) + i, true));
+  }
+  if (std::getenv("DS_MIPS_PC_ONLY")) {
+    jit::detach(mj.nds);
+    return;
+  }
+
   t.require_halt = true;
   t.code = {alu_reg(10, 0, 0, 1) | (1u << 20),
             alu_imm(4, 0, 0, 0, 1, 3), 0x3AFFFFFC,
@@ -1725,6 +1744,18 @@ void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
 } // namespace
 
 int main(int argc, char** argv) {
+#if defined(__mips__)
+  if (argc > 1 && (std::strcmp(argv[1], "nativepc9") == 0 ||
+                   std::strcmp(argv[1], "nativepc7") == 0)) {
+    const bool a9 = argv[1][8] == '9';
+    setenv("DS_MIPS_NATIVE", "1", 1);
+    setenv("DS_MIPS_NATIVE_OP", "all", 1);
+    setenv("DS_MIPS_NATIVE_ARM7", "1", 1);
+    setenv("DS_MIPS_PC_ONLY", "1", 1);
+    native_compare_loop(a9 ? Cpu::ARM9 : Cpu::ARM7);
+    return 0;
+  }
+#endif
   if (argc > 3 && std::strcmp(argv[1], "directed") == 0) {
     directed(static_cast<u32>(std::atoi(argv[2])), static_cast<u32>(std::atoi(argv[3])));
     return 0;

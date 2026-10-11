@@ -109,7 +109,7 @@ static bool native_thumb_mem(u32 x, ThumbMem &m) {
   }
   return false;
 }
-static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m) {
+static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const AOp op = ds::arm::decode_arm(x);
   const bool extra = op == AOp::LdrStrHImm || op == AOp::LdrStrHReg;
   if ((!extra && op != AOp::LdrStrImm && op != AOp::LdrStrReg) ||
@@ -126,7 +126,9 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m) {
   m.rn = (x >> 16) & 15;
   m.rd = (x >> 12) & 15;
   m.base_const = m.rn == 15;
-  if (m.rd == 15 || m.cond == 15 || (m.base_const && m.post) ||
+  // ARM7 PC loads through open bus still need interpreter timing/state parity.
+  if ((m.rd == 15 && (!arm9 || !m.load || m.width != 4 || extra)) ||
+      m.cond == 15 || (m.base_const && m.post) ||
       (m.writeback && m.load && m.rd == m.rn) ||
       (extra && ((!m.load && sh != 1) || sh == 0)))
     return false; // LDRD/STRD are intentionally left to the interpreter.
@@ -521,6 +523,7 @@ static void reload_cached(MipsEmitter &e, u32 cache_mask);
 static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                            bool thumb, const ThumbMem &m, u32 cache_mask,
                            std::vector<size_t> &ex, int slot7) {
+  const bool pc_dest = m.arm && m.rd == 15;
   // Tagged/MMIO/write-protected pages retain helper semantics, including SMC
   // and device IO; plain mapped RAM uses the direct path on either CPU.
   if (m.base_const) li(e, T0, m.base);
@@ -601,12 +604,27 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
       e.sll(T1, T1, m.width == 1 ? 24 : 16);
       e.sra(T1, T1, m.width == 1 ? 24 : 16);
     }
-    putr(e, m.rd, T1, cache_mask);
+    if (!pc_dest) putr(e, m.rd, T1, cache_mask);
   };
   auto writeback = [&] {
     if (!m.writeback) return;
     e.lw(T3, 52, R_SP); e.nop();
     putr(e, m.rn, T3, cache_mask);
+  };
+  auto branch_pc = [&] {
+    e.sw(T1, 60, R_SP);
+    emit_data_extra(e, c, pc, thumb, m.width, false, slot7);
+    e.lw(T1, 60, R_SP); e.nop();
+    e.move(4, R_CTX); e.move(5, T1);
+    e.addiu(6, 0, c.which == ds::Cpu::ARM9 ? 1 : 0);
+    e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
+    spill_cached(e, cache_mask);
+    e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+    e.jalr(R_RA, 25); e.nop();
+    e.move(R_GUEST_PC, 2);
+    e.lw(R_BUDGET, OB, R_CTX); e.nop();
+    reload_cached(e, cache_mask);
+    ex.push_back(e.b()); e.nop();
   };
   e.move(4, R_CTX);
   e.move(5, R_FP);
@@ -632,17 +650,23 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   reload_cached(e, cache_mask);
   loaded();
   writeback();
-  emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
-  e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
-  ex.push_back(e.blez(R_BUDGET)); e.nop();
-  // Slow operations may have raised scheduler alerts; return at this boundary.
-  ex.push_back(e.b()); e.nop();
+  if (pc_dest) branch_pc();
+  else {
+    emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
+    e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
+    ex.push_back(e.blez(R_BUDGET)); e.nop();
+    // Slow operations may have raised scheduler alerts; return at this boundary.
+    ex.push_back(e.b()); e.nop();
+  }
   e.patch_branch(fast_done, e.size());
   loaded();
   writeback();
-  emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
-  e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
-  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  if (pc_dest) branch_pc();
+  else {
+    emit_data_extra(e, c, pc, thumb, m.width, !m.load, slot7);
+    e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
+    ex.push_back(e.blez(R_BUDGET)); e.nop();
+  }
   // Dynamic timing tables mean a timing update can affect any page used here.
 }
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
@@ -1426,7 +1450,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, m) :
-                                native_arm_mem(x, key_pc(ks[i]), m);
+                                native_arm_mem(x, key_pc(ks[i]), m, arm9);
     if (!mem_candidate && !thumb)
       mem_candidate = native_arm_single_multi(x, m);
     if (mem_candidate && !arm9)
@@ -1834,7 +1858,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     ThumbMem mem{};
     bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
-                             native_arm_mem(is[q], pc, mem);
+                             native_arm_mem(is[q], pc, mem, arm9);
     if (!native_mem && !thumb)
       native_mem = native_arm_single_multi(is[q], mem);
     const int slot7 = native_mem && !arm9 ?
@@ -1995,7 +2019,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         if (!thumb && native_arm_block(is[i])) return true;
         ThumbMem m{};
         bool candidate = thumb ? native_thumb_mem(is[i], m) :
-            native_arm_mem(is[i], key_pc(ks[i]), m);
+            native_arm_mem(is[i], key_pc(ks[i]), m, arm9);
         if (!candidate && !thumb) candidate = native_arm_single_multi(is[i], m);
         if (candidate && (arm9 || arm7_data_slot(*jc.ctx, key_pc(ks[i]), thumb,
                                                    m.width, m.load) >= 0))
