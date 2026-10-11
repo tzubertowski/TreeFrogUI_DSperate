@@ -719,7 +719,7 @@ void native_alu(int only = -1) {
           CHECK(run_both(mi, mj, pred, which == Cpu::ARM9,
                          (which == Cpu::ARM9 ? 92000 : 72000) + flags, true));
         }
-        for (u32 op : {0u, 1u, 2u, 4u, 8u, 9u, 10u, 11u, 12u, 13u}) {
+        for (u32 op : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 11u, 12u, 13u}) {
           for (u32 form = 0; form < 3; ++form) {
             for (u32 flags = 0; flags < 16; ++flags) {
               Trial flag_case{};
@@ -954,6 +954,21 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
       cmp.regs[13] = STACK;
       CHECK(run_both(mi, mj, cmp, a9,
                      (a9 ? 94900 : 74900) + instr + flags, true));
+    }
+  }
+  for (u32 instr : {0x4148u, 0x4188u}) {
+    for (u32 flags = 0; flags < 16; ++flags) {
+      Trial carry{};
+      carry.thumb = true;
+      carry.require_halt = true;
+      carry.cpsr = flags << 28;
+      carry.code = {instr};
+      for (int r = 0; r < 15; ++r) carry.regs[r] = 0;
+      carry.regs[0] = flags & 1 ? 0xffffffffu : 0x7fffffffu;
+      carry.regs[1] = flags & 2 ? 0x80000000u : 1;
+      carry.regs[13] = STACK;
+      CHECK(run_both(mi, mj, carry, a9,
+                     (a9 ? 94970 : 74970) + instr + flags, true));
     }
   }
   Trial high_add{};

@@ -56,7 +56,8 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
   // forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 8 &&
+  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 5 &&
+      n.op != 6 && n.op != 8 &&
       n.op != 9 && n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
     return false;
   const bool test_op = n.op == 8 || n.op == 9 || n.op == 10 || n.op == 11;
@@ -65,6 +66,7 @@ static bool native(u32 x, N &n, bool shifts) {
   if (test_op && !n.setflags)
     return false;
   if (n.setflags && !logical_flags && n.op != 2 && n.op != 4 &&
+      n.op != 5 && n.op != 6 &&
       n.op != 10 && n.op != 11)
     return false;
   if (a == AOp::DpImm) {
@@ -103,6 +105,7 @@ static bool native_thumb(u32 x, N &n) {
   const bool high_cmp = high_op && high_kind == 1;
   const bool alu_reg = (h & 0xfc00) == 0x4000 &&
       (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
+       ((h >> 6) & 15) == 5 || ((h >> 6) & 15) == 6 ||
        ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 10 ||
        ((h >> 6) & 15) == 11 || ((h >> 6) & 15) == 12);
   if (!mov_imm && !imm_shift && !imm8_arith && !cmp_imm8 && !imm3_arith && !alu_reg &&
@@ -322,6 +325,42 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       e.addiu(T2, T2, -1);
     }
     break;
+  case 5: {
+    e.move(12, T1);
+    e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
+    e.nop();
+    e.srl(T3, T3, 29);
+    e.andi(T3, T3, 1);
+    e.nor(T1, T1, 0);
+    e.subu(T2, T0, T1);
+    e.addiu(T2, T2, -1);
+    e.move(13, T2);
+    e.subu(T1, 0, T3);
+    e.subu(T2, T2, T1);
+    e.sltu(T1, T2, 13);
+    e.sltu(T3, 13, T0);
+    e.or_(T3, T3, T1);
+    e.sll(T3, T3, 29);
+    break;
+  }
+  case 6: {
+    e.move(12, T1);
+    e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
+    e.nop();
+    e.srl(T3, T3, 29);
+    e.andi(T3, T3, 1);
+    e.xori(T3, T3, 1);
+    e.move(13, T3);
+    e.subu(T2, T0, T1);
+    e.move(T1, T2);
+    e.sltu(T3, T0, 12);
+    e.subu(T2, T2, 13);
+    e.sltu(T1, T1, 13);
+    e.or_(T3, T3, T1);
+    e.xori(T3, T3, 1);
+    e.sll(T3, T3, 29);
+    break;
+  }
   case 8:
     e.and_(T2, T0, T1);
     break;
@@ -342,23 +381,30 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.nor(T2, T1, 0);
   }
   if (n.setflags) {
-    const bool arithmetic = n.op == 2 || n.op == 4 || n.op == 10 || n.op == 11;
+    const bool arithmetic = n.op == 2 || n.op == 4 || n.op == 5 || n.op == 6 ||
+                            n.op == 10 || n.op == 11;
     if (arithmetic) {
-      if (n.op == 4 || n.op == 11) {
+      if (n.op == 4 || n.op == 5 || n.op == 11) {
+        if (n.op == 5) {
+          // C was calculated together with the two-stage addition above.
+        } else {
         e.sltu(T3, T2, T0);
         e.andi(T3, T3, 1);
         e.sll(T3, T3, 29);
-        e.xor_(12, T0, T1);
-        e.nor(12, 12, 0);
+        }
       } else {
-        e.sltu(T3, T0, T1);
-        e.nor(T3, T3, 0);
-        e.andi(T3, T3, 1);
-        e.sll(T3, T3, 29);
-        e.xor_(12, T0, T1);
+        if (n.op == 2 || n.op == 10) {
+          e.sltu(T3, T0, T1);
+          e.nor(T3, T3, 0);
+          e.andi(T3, T3, 1);
+          e.sll(T3, T3, 29);
+        }
       }
-      e.xor_(13, T0, T2);
-      e.and_(12, 12, 13);
+      const u32 rhs = n.op == 5 || n.op == 6 ? 12 : T1;
+      e.xor_(13, T0, rhs);
+      if (n.op == 4 || n.op == 5 || n.op == 11) e.nor(13, 13, 0);
+      e.xor_(12, T0, T2);
+      e.and_(12, 13, 12);
       e.srl(12, 12, 31);
       e.sll(12, 12, 28);
       e.or_(T3, T3, 12);
