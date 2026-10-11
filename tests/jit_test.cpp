@@ -719,7 +719,7 @@ void native_alu(int only = -1) {
           CHECK(run_both(mi, mj, pred, which == Cpu::ARM9,
                          (which == Cpu::ARM9 ? 92000 : 72000) + flags, true));
         }
-        for (u32 op : {0u, 1u, 2u, 4u, 8u, 9u, 12u, 13u}) {
+        for (u32 op : {0u, 1u, 2u, 4u, 8u, 9u, 10u, 11u, 12u, 13u}) {
           for (u32 form = 0; form < 3; ++form) {
             for (u32 flags = 0; flags < 16; ++flags) {
               Trial flag_case{};
@@ -912,6 +912,37 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
                         cond == 8 ? c && !z : cond == 9 ? !c || z : cond == 10 ? n == v :
                         cond == 11 ? n != v : cond == 12 ? !z && n == v : z || n != v;
       CHECK(results[0] == (take ? 2u : 1u));
+    }
+  }
+  for (u32 instr : {0x1888u, 0x1a88u}) {
+    for (u32 pattern = 0; pattern < 4; ++pattern) {
+      Trial arith{};
+      arith.thumb = true;
+      arith.require_halt = true;
+      arith.cpsr = pattern << 28;
+      arith.code = {instr, 0x6030};
+      for (int r = 0; r < 15; ++r) arith.regs[r] = 0;
+      arith.regs[1] = pattern & 1 ? 0x80000000u : 0x7fffffffu;
+      arith.regs[2] = pattern & 2 ? 0xffffffffu : 0x80000001u;
+      arith.regs[6] = BUF_BASE;
+      arith.regs[13] = STACK;
+      CHECK(run_both(mi, mj, arith, a9,
+                     (a9 ? 94800 : 74800) + instr + pattern, true));
+    }
+  }
+  for (u32 instr : {0x4208u, 0x4288u, 0x42c8u}) {
+    for (u32 flags = 0; flags < 16; ++flags) {
+      Trial cmp{};
+      cmp.thumb = true;
+      cmp.require_halt = true;
+      cmp.cpsr = flags << 28;
+      cmp.code = {instr};
+      for (int r = 0; r < 15; ++r) cmp.regs[r] = 0;
+      cmp.regs[0] = flags & 1 ? 0x80000000u : 0x7fffffffu;
+      cmp.regs[1] = flags & 2 ? 0xffffffffu : 0x80000001u;
+      cmp.regs[13] = STACK;
+      CHECK(run_both(mi, mj, cmp, a9,
+                     (a9 ? 94900 : 74900) + instr + flags, true));
     }
   }
   const struct { u32 instr, input, output, dst; } arithmetic[] = {

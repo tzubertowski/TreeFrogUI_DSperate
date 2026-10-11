@@ -56,15 +56,16 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
   // forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 4 && n.op != 8 && n.op != 9 &&
-      n.op != 12 && n.op != 13 && n.op != 2)
+  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 8 &&
+      n.op != 9 && n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
     return false;
-  const bool test_op = n.op == 8 || n.op == 9;
+  const bool test_op = n.op == 8 || n.op == 9 || n.op == 10 || n.op == 11;
   const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
                              n.op == 12 || n.op == 13;
   if (test_op && !n.setflags)
     return false;
-  if (n.setflags && !logical_flags && n.op != 2 && n.op != 4)
+  if (n.setflags && !logical_flags && n.op != 2 && n.op != 4 &&
+      n.op != 10 && n.op != 11)
     return false;
   if (a == AOp::DpImm) {
     n.im = true;
@@ -93,15 +94,17 @@ static bool native_thumb(u32 x, N &n) {
   const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
   const bool imm8_arith = (h & 0xf800) == 0x3000 || (h & 0xf800) == 0x3800;
   const bool imm3_arith = (h & 0xfe00) == 0x1c00 || (h & 0xfe00) == 0x1e00;
+  const bool reg3_arith = (h & 0xfe00) == 0x1800 || (h & 0xfe00) == 0x1a00;
   const bool high_mov = (h & 0xff00) == 0x4600 && ((h >> 8) & 3) == 2;
   const bool alu_reg = (h & 0xfc00) == 0x4000 &&
       (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
-       ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 12);
+       ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 10 ||
+       ((h >> 6) & 15) == 11 || ((h >> 6) & 15) == 12);
   if (!mov_imm && !imm_shift && !imm8_arith && !imm3_arith && !alu_reg &&
-      !high_mov)
+      !reg3_arith && !high_mov)
     return false;
   if (mov_imm || imm_shift || high_mov) n.op = 13;
-  else if (imm8_arith || imm3_arith)
+  else if (imm8_arith || imm3_arith || reg3_arith)
     n.op = (h & (imm8_arith ? 0x0800 : 0x0200)) ? 2 : 4;
   else n.op = (h >> 6) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
@@ -131,10 +134,16 @@ static bool native_thumb(u32 x, N &n) {
     n.rn = (h >> 3) & 7;
     n.imm = (h >> 6) & 7;
     n.im = true;
+  } else if (reg3_arith) {
+    n.rd = h & 7;
+    n.rn = (h >> 3) & 7;
+    n.rm = (h >> 6) & 7;
   } else if (alu_reg) {
     n.rd = h & 7;
     n.rn = n.rd;
     n.rm = (h >> 3) & 7;
+    if (((h >> 6) & 15) == 10 || ((h >> 6) & 15) == 11)
+      n.rd = 15;
   } else if (high_mov) {
     n.rd = (h & 7) | ((h >> 4) & 8);
     n.rm = (h >> 3) & 15;
@@ -286,9 +295,11 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.xor_(T2, T0, T1);
     break;
   case 2:
+  case 10:
     e.subu(T2, T0, T1);
     break;
   case 4:
+  case 11:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
     // Equivalent modulo-32-bit form keeps ADD native without that opcode.
     if (n.setflags) {
@@ -321,9 +332,9 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.nor(T2, T1, 0);
   }
   if (n.setflags) {
-    const bool arithmetic = n.op == 2 || n.op == 4;
+    const bool arithmetic = n.op == 2 || n.op == 4 || n.op == 10 || n.op == 11;
     if (arithmetic) {
-      if (n.op == 4) {
+      if (n.op == 4 || n.op == 11) {
         e.sltu(T3, T2, T0);
         e.andi(T3, T3, 1);
         e.sll(T3, T3, 29);
@@ -380,7 +391,8 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
     }
   }
-  if (n.op != 8 && n.op != 9) putr(e, n.rd, T2, cache_mask);
+  if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11)
+    putr(e, n.rd, T2, cache_mask);
 }
 static bool local_loop_branch(u32 x, u32 pc, u32 start) {
   if ((x & 0x0e000000u) != 0x0a000000u || (x & (1u << 24)))
@@ -460,7 +472,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
       if (n.op != 13 && n.rn < CACHE_COUNT) cache_mask |= 1u << n.rn;
       if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
-      if (n.op != 8 && n.op != 9 && n.rd < CACHE_COUNT)
+      if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11 && n.rd < CACHE_COUNT)
         cache_mask |= 1u << n.rd;
     }
   }
