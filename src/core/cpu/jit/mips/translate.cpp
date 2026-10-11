@@ -78,9 +78,12 @@ static bool native(u32 x, N &n, bool shifts) {
   n.im = false;
   n.shift = (x >> 7) & 31;
   n.shift_type = (x >> 5) & 3;
-  if (n.setflags && (n.shift || n.shift_type))
-    return false;
+  if (n.setflags && n.shift_type == 3 && !n.shift)
+    return false; // RRX needs old C in the shifted value; leave it in interpreter.
+  n.carry_dynamic = n.setflags && (n.shift || n.shift_type);
+  n.carry_valid = n.carry_dynamic;
   return n.shift_type == 0 ||
+         (!n.shift && (n.shift_type == 1 || n.shift_type == 2)) ||
          (n.shift && n.shift_type == 3) ||
          (n.shift && (n.shift_type == 1 || n.shift_type == 2));
 }

@@ -740,6 +740,25 @@ void native_alu(int only = -1) {
             }
           }
         }
+        const u32 shifts[][2] = {{0, 1}, {0, 31}, {1, 0}, {2, 0}, {3, 1}, {3, 31}};
+        for (u32 op : {0u, 1u, 8u, 9u, 12u, 13u}) {
+          for (const auto& shift : shifts) {
+            const u32 type = shift[0], amount = shift[1];
+            for (u32 flags = 0; flags < 16; ++flags) {
+              Trial shifted{};
+              shifted.require_halt = true;
+              shifted.cpsr = flags << 28;
+              shifted.code = {alu_reg(op, 0, 1, 2, type, amount) | (1u << 20)};
+              for (int i = 0; i < 15; ++i) shifted.regs[i] = 0x10203040u + static_cast<u32>(i);
+              shifted.regs[1] = flags & 1 ? 0x80000000u : 0x7fffffffu;
+              shifted.regs[2] = flags & 2 ? 0xffffffffu : 0x80000001u;
+              shifted.regs[9] = BUF_BASE;
+              shifted.regs[13] = STACK;
+              CHECK(run_both(mi, mj, shifted, which == Cpu::ARM9,
+                             93500 + op * 128 + type * 32 + amount + flags, true));
+            }
+          }
+        }
       }
       jit::detach(mj.nds);
     }
