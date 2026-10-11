@@ -902,6 +902,11 @@ void native_alu(int only = -1) {
   unsetenv("DS_MIPS_NATIVE_OP");
   unsetenv("DS_MIPS_NATIVE");
   unsetenv("DS_MIPS_NATIVE_ARM7");
+  // native_compare_loop enables these opt-in paths for its canaries; don't
+  // accidentally turn the randomized baseline fuzz into another native run.
+  unsetenv("DS_MIPS_NATIVE_BRANCH");
+  unsetenv("DS_MIPS_NATIVE_MEM");
+  unsetenv("DS_MIPS_NATIVE_MEM_ARM7");
   std::puts("jit native ALU: immediate+register forms ok");
 }
 
@@ -942,6 +947,23 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     t.require_halt = true; t.regs[2] = 0x3fe; t.regs[4] = HALT_STUB;
     t.code = {pc_alu, 0xEAFFFFFE};
     CHECK(run_both(mi, mj, t, a9, a9 ? 91027 : 71027, true));
+  }
+  t = Trial{};
+  t.require_halt = true; t.regs[2] = 2; t.regs[5] = 3;
+  t.code = {alu_reg_shift(4, 3, 15, 5, 2, 0)};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91030 : 71030, true));
+  CHECK(mj.cpu.hot.regs[3] == CODE_BASE + 24);
+  t = Trial{};
+  t.require_halt = true; t.regs[2] = 0;
+  t.regs[5] = HALT_STUB - (CODE_BASE + 12);
+  t.code = {alu_reg_shift(4, 15, 15, 5, 2, 0), 0xEAFFFFFE};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91031 : 71031, true));
+  for (u32 thumb_pc : {0x4687u, 0x4487u}) {
+    t = Trial{};
+    t.thumb = true; t.require_halt = true;
+    t.regs[0] = thumb_pc == 0x4687u ? CODE_BASE + 2 : 0xfffffffeu;
+    t.code = {thumb_pc, 0xDF00, 0x46C0};
+    CHECK(run_both(mi, mj, t, a9, a9 ? 91028 : 71028, true));
   }
   if (std::getenv("DS_MIPS_PC_ONLY")) {
     jit::detach(mj.nds);

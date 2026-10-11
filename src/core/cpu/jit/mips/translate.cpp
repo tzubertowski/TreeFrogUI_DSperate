@@ -991,7 +991,10 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     return;
   }
   if (n.op != 13) {
-    if (n.rn_pc) e.move(T0, R_GUEST_PC);
+    if (n.rn_pc) {
+      e.move(T0, R_GUEST_PC);
+      if (n.reg_shift) e.addiu(T0, T0, 4); // ARM register-shift Rn=pc reads pc+12.
+    }
     else getr(e, T0, n.rn, cache_mask);
   }
   if (n.im)
@@ -1277,13 +1280,14 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11)
     putr(e, n.rd, T2, cache_mask);
 }
-static void emit_arm_pc_branch(MipsEmitter &e, const CpuContext &c, u32 pc,
-                               const N &n, u32 cache_mask,
-                               std::vector<size_t> &ex) {
+static void emit_pc_branch(MipsEmitter &e, const CpuContext &c, u32 pc,
+                           bool thumb, const N &n, u32 cache_mask,
+                           std::vector<size_t> &ex) {
   std::vector<size_t> not_executed;
-  emit_timing(e, c, pc, false);
+  emit_timing(e, c, pc, thumb, n.reg_shift);
   emit_skip_if_false(e, n.cond, not_executed);
   emit_n(e, n, cache_mask);
+  if (n.reg_shift) e.addiu(R_BUDGET, R_BUDGET, -1);
   e.move(4, R_CTX); e.move(5, T2); e.move(6, 0);
   e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
   spill_cached(e, cache_mask);
@@ -1294,7 +1298,7 @@ static void emit_arm_pc_branch(MipsEmitter &e, const CpuContext &c, u32 pc,
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
   for (size_t p : not_executed) e.patch_branch(p, e.size());
-  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
   ex.push_back(e.blez(R_BUDGET)); e.nop();
 }
 static bool local_loop_branch(u32 x, u32 pc, u32 start) {
@@ -1357,6 +1361,22 @@ static bool native_arm_pc_branch(u32 x, N &n, bool arm9) {
   const u32 non_pc = (x & ~(15u << 12)) | (14u << 12);
   if (!native(non_pc, n, true, arm9)) return false;
   n.rd = 15;
+  return true;
+}
+static bool native_thumb_pc_branch(u32 x, N &n) {
+  const u32 h = static_cast<ds::u16>(x);
+  if ((h & 0xfc00u) != 0x4400u) return false;
+  const u32 op = (h >> 8) & 3u;
+  const u32 rd = (h & 7u) | ((h >> 4) & 8u);
+  if (rd != 15 || (op != 0 && op != 2)) return false;
+  n.op = op == 0 ? 4 : 13;
+  n.rd = 15;
+  n.rn = op == 0 ? 15 : 0;
+  n.rm = (h >> 3) & 15;
+  n.rn_pc = op == 0;
+  n.rm_pc = n.rm == 15;
+  n.setflags = false;
+  n.cond = 14;
   return true;
 }
 static bool thumb_branch(u32 x) {
@@ -1508,6 +1528,14 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!pc_branch.im) score_reg(pc_branch.rm);
       if (pc_branch.reg_shift) score_reg(pc_branch.shift_reg);
     }
+    N thumb_pc_branch{};
+    if (use_native_branch && thumb &&
+        (!native_limit || candidates < native_limit) &&
+        native_thumb_pc_branch(x, thumb_pc_branch)) {
+      ++candidates;
+      if (thumb_pc_branch.op == 4 && !thumb_pc_branch.rm_pc)
+        score_reg(thumb_pc_branch.rm);
+    }
   }
   if (use_native_branch && !thumb &&
       (!native_limit || candidates < native_limit) &&
@@ -1574,6 +1602,17 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   const size_t loop_head = e.size();
   for (u32 q = 0; q < is.size();) {
     const u32 pc = key_pc(ks[q]);
+    N thumb_pc_branch{};
+    if (use_native_branch && thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_thumb_pc_branch(is[q], thumb_pc_branch)) {
+      note_code_dep(b, pc + 4);
+      emit_pc_branch(e, *jc.ctx, pc, true, thumb_pc_branch, cache_mask, ex);
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     if (use_native_branch && thumb && q + 1 < is.size() &&
         (!native_limit || native_count + 2 <= native_limit) &&
         thumb_bl_prefix(is[q]) && thumb_bl_suffix(is[q + 1])) {
@@ -1695,7 +1734,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         (!native_limit || native_count < native_limit) &&
         native_arm_pc_branch(is[q], pc_branch, arm9)) {
       note_code_dep(b, pc + 8);
-      emit_arm_pc_branch(e, *jc.ctx, pc, pc_branch, cache_mask, ex);
+      emit_pc_branch(e, *jc.ctx, pc, false, pc_branch, cache_mask, ex);
       ++native_count;
       rt().stats.instrs_translated++;
       ++q;
@@ -2057,6 +2096,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
         if (!thumb && native_arm_exc_return(is[i])) return true;
+        N thumb_pc_branch{};
+        if (thumb && native_thumb_pc_branch(is[i], thumb_pc_branch)) return true;
         N pc_branch{};
         if (!thumb && native_arm_pc_branch(is[i], pc_branch, arm9)) return true;
         if (!thumb && (arm_branch(is[i]) ||
