@@ -1277,6 +1277,26 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11)
     putr(e, n.rd, T2, cache_mask);
 }
+static void emit_arm_pc_branch(MipsEmitter &e, const CpuContext &c, u32 pc,
+                               const N &n, u32 cache_mask,
+                               std::vector<size_t> &ex) {
+  std::vector<size_t> not_executed;
+  emit_timing(e, c, pc, false);
+  emit_skip_if_false(e, n.cond, not_executed);
+  emit_n(e, n, cache_mask);
+  e.move(4, R_CTX); e.move(5, T2); e.move(6, 0);
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
+  spill_cached(e, cache_mask);
+  e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+  e.jalr(R_RA, 25); e.nop();
+  e.move(R_GUEST_PC, 2);
+  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  reload_cached(e, cache_mask);
+  ex.push_back(e.b()); e.nop();
+  for (size_t p : not_executed) e.patch_branch(p, e.size());
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+}
 static bool local_loop_branch(u32 x, u32 pc, u32 start) {
   if ((x & 0x0e000000u) != 0x0a000000u || (x & (1u << 24)))
     return false;
@@ -1331,6 +1351,13 @@ static bool native_arm_exc_return_imm(u32 x) {
 }
 static bool native_arm_exc_return(u32 x) {
   return native_arm_exc_return_reg(x) || native_arm_exc_return_imm(x);
+}
+static bool native_arm_pc_branch(u32 x, N &n, bool arm9) {
+  if (((x >> 12) & 15u) != 15u || (x & (1u << 20))) return false;
+  const u32 non_pc = (x & ~(15u << 12)) | (14u << 12);
+  if (!native(non_pc, n, true, arm9)) return false;
+  n.rd = 15;
+  return true;
 }
 static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
@@ -1471,6 +1498,15 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (native_arm_exc_return_reg(x)) score_reg(x & 15u);
       else if (((x >> 21) & 15u) != 13 && ((x >> 16) & 15u) != 15u)
         score_reg((x >> 16) & 15u);
+    }
+    N pc_branch{};
+    if (use_native_branch && !thumb &&
+        (!native_limit || candidates < native_limit) &&
+        native_arm_pc_branch(x, pc_branch, arm9)) {
+      ++candidates;
+      if (pc_branch.op != 13 || pc_branch.reg_shift) score_reg(pc_branch.rn);
+      if (!pc_branch.im) score_reg(pc_branch.rm);
+      if (pc_branch.reg_shift) score_reg(pc_branch.shift_reg);
     }
   }
   if (use_native_branch && !thumb &&
@@ -1649,6 +1685,17 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.move(R_GUEST_PC, T0);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    N pc_branch{};
+    if (use_native_branch && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_arm_pc_branch(is[q], pc_branch, arm9)) {
+      note_code_dep(b, pc + 8);
+      emit_arm_pc_branch(e, *jc.ctx, pc, pc_branch, cache_mask, ex);
       ++native_count;
       rt().stats.instrs_translated++;
       ++q;
@@ -2010,6 +2057,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
         if (!thumb && native_arm_exc_return(is[i])) return true;
+        N pc_branch{};
+        if (!thumb && native_arm_pc_branch(is[i], pc_branch, arm9)) return true;
         if (!thumb && (arm_branch(is[i]) ||
             ((is[i] & 0x0FFFFFF0u) == 0x012FFF10u && (is[i] & 15u) != 15u)))
           return true;

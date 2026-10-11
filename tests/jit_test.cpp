@@ -937,6 +937,12 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     CHECK(run_both(mi, mj, t, a9, a9 ? 91025 : 71025, true));
     CHECK(mj.cpu.hot.regs[13] == STACK + 4);
   }
+  for (u32 pc_alu : {0xE1A0F004u, 0xE08FF102u}) {
+    t = Trial{};
+    t.require_halt = true; t.regs[2] = 0x3fe; t.regs[4] = HALT_STUB;
+    t.code = {pc_alu, 0xEAFFFFFE};
+    CHECK(run_both(mi, mj, t, a9, a9 ? 91027 : 71027, true));
+  }
   if (std::getenv("DS_MIPS_PC_ONLY")) {
     jit::detach(mj.nds);
     return;
