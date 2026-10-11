@@ -36,7 +36,7 @@ using ds::jit::CACHE_SAVED;
 struct N {
   u32 op, rd, rn, rm, imm, shift, cond, rdlo, shift_reg;
   bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift;
-  bool signed_mul = false, accumulate = false;
+  bool signed_mul = false, accumulate = false, mul_arm7 = false;
   ds::u8 shift_type;
 };
 struct ThumbMem {
@@ -337,7 +337,7 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
     n.accumulate = decoded == AOp::Umlal || decoded == AOp::Smlal;
     return n.cond != 15;
   }
-  if (!thumb && arm9 && (decoded == AOp::Mul || decoded == AOp::Mla)) {
+  if (!thumb && (decoded == AOp::Mul || decoded == AOp::Mla)) {
     const bool acc = decoded == AOp::Mla;
     const u32 rd = (x >> 16) & 15u, rn = (x >> 12) & 15u;
     const u32 rs = (x >> 8) & 15u, rm = x & 15u;
@@ -353,14 +353,15 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
     n.rm = rm;
     n.rdlo = acc ? rn : 0;
     n.accumulate = acc;
+    n.mul_arm7 = !arm9;
     n.setflags = x & (1u << 20);
     n.cond = x >> 28;
     return n.rd != 15;
   }
-  if (thumb && !arm9 && (static_cast<ds::u16>(x) & 0xfc00u) == 0x4000u &&
-      ((x >> 6) & 15u) == 13u)
-    return false; // shortcut: ARM7 Thumb MUL waits for magnitude-based timing and C clearing.
-  return thumb ? native_thumb(x, n) : native(x, n, true);
+  if (!thumb) return native(x, n, true);
+  if (!native_thumb(x, n)) return false;
+  n.mul_arm7 = !arm9 && n.op == 16;
+  return true;
 }
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
   if (cond == 14) return;
@@ -708,7 +709,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     if (n.accumulate) { getr(e, T0, n.rdlo, cache_mask); e.addu(T2, T2, T0); }
     if (n.setflags) {
       e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
-      li(e, T1, 0x3fffffffu); e.and_(T0, T0, T1);
+      li(e, T1, n.mul_arm7 ? 0x1fffffffu : 0x3fffffffu); e.and_(T0, T0, T1);
       e.srl(T1, T2, 31); e.sll(T1, T1, 31); e.or_(T0, T0, T1);
       const size_t nonzero = e.bnez(T2); e.nop();
       li(e, T1, 0x40000000u); e.or_(T0, T0, T1);
@@ -1467,12 +1468,41 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                      key_pc(ks[q]), is[q], n.op, n.rd, n.rn, n.rm,
                      n.im ? "imm" : "reg");
       note_code_dep(b, key_pc(ks[q]) + (thumb ? 4 : 8));
-      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb, n.reg_shift);
+      emit_timing(e, *jc.ctx, key_pc(ks[q]), thumb, n.reg_shift || n.mul_arm7);
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
-      if (n.reg_shift || n.op == 16 || n.op == 17)
-        e.addiu(R_BUDGET, R_BUDGET, -(n.setflags && (n.op == 16 || n.op == 17) ? 3 : 1));
+      if (n.mul_arm7 && n.op == 16) {
+        getr(e, T0, n.rn, cache_mask);
+        e.sra(T1, T0, 31); e.xor_(T0, T0, T1);
+        e.addiu(T3, 0, 1);
+        li(e, T1, 0xffffff00u); e.and_(T2, T0, T1);
+        const size_t one = e.beq(T2, 0); e.nop();
+        e.addiu(T3, 0, 2);
+        li(e, T1, 0xffff0000u); e.and_(T2, T0, T1);
+        const size_t two = e.beq(T2, 0); e.nop();
+        e.addiu(T3, 0, 3);
+        li(e, T1, 0xff000000u); e.and_(T2, T0, T1);
+        const size_t three = e.beq(T2, 0); e.nop();
+        e.addiu(T3, 0, 4);
+        if (n.accumulate) e.addiu(T3, T3, 1);
+        const size_t done = e.b(); e.nop();
+        e.patch_branch(one, e.size());
+        if (n.accumulate) e.addiu(T3, T3, 1);
+        const size_t done_one = e.b(); e.nop();
+        e.patch_branch(two, e.size());
+        if (n.accumulate) e.addiu(T3, T3, 1);
+        const size_t done_two = e.b(); e.nop();
+        e.patch_branch(three, e.size());
+        if (n.accumulate) e.addiu(T3, T3, 1);
+        e.patch_branch(done, e.size());
+        e.patch_branch(done_one, e.size());
+        e.patch_branch(done_two, e.size());
+        e.subu(R_BUDGET, R_BUDGET, T3);
+      } else if (n.reg_shift || n.op == 16 || n.op == 17) {
+        e.addiu(R_BUDGET, R_BUDGET,
+                -(n.setflags && (n.op == 16 || n.op == 17) ? 3 : 1));
+      }
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
       // Native timing must leave at the same boundary as the interpreter:

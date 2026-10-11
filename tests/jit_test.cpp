@@ -712,6 +712,28 @@ void native_alu(int only = -1) {
       t.require_halt = true;
       CHECK(run_both(mi, mj, t, which == Cpu::ARM9, which == Cpu::ARM9 ? 91001 : 71001, true));
       if (std::strcmp(native_op, "all") == 0) {
+        static constexpr u32 mul_rhs[] = {
+            0u, 0x7fu, 0xffffff80u, 0x100u, 0xffffu,
+            0x10000u, 0x01000000u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
+        for (u32 form = 0; form < 4; ++form) {
+          for (u32 i = 0; i < sizeof mul_rhs / sizeof mul_rhs[0]; ++i) {
+            const u32 rhs = mul_rhs[i];
+            Trial mul{};
+            mul.require_halt = true;
+            const u32 op = form & 1 ? 0xE0235493u : 0xE0020493u;
+            mul.code = {op | ((form & 2) ? (1u << 20) : 0),
+                        0xE10F6000u, 0xE5812000u, 0xE5816004u};
+            mul.cpsr = 0xf0000000u;
+            mul.regs[1] = BUF_BASE;
+            mul.regs[3] = 0x12345678u;
+            mul.regs[4] = rhs;
+            mul.regs[5] = 0x87654321u;
+            mul.regs[13] = STACK;
+            CHECK(run_both(mi, mj, mul, which == Cpu::ARM9,
+                           (which == Cpu::ARM9 ? 102000 : 82000) + form * 16 + i,
+                           true));
+          }
+        }
         for (u32 shift_type = 0; shift_type < 4; ++shift_type) {
           for (u32 amount : {0u, 1u, 31u, 32u, 33u, 255u}) {
             Trial variable{};
