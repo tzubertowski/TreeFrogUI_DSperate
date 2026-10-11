@@ -1017,6 +1017,17 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, mul, true, 94015, true));
     std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
     CHECK(results[0] == 0x23456780u);
+    Trial umull{};
+    umull.require_halt = true;
+    umull.code = {0xE0812394, 0xE5852000, 0xE5851004}; // UMULL r2,r1,r4,r3
+    for (int r = 0; r < 15; ++r) umull.regs[r] = 0;
+    umull.regs[3] = 0x12345678u;
+    umull.regs[4] = 0x10u;
+    umull.regs[5] = BUF_BASE;
+    umull.regs[13] = STACK;
+    CHECK(run_both(mi, mj, umull, true, 94018, true));
+    std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 2);
+    CHECK(results[0] == 0x23456780u && results[1] == 1u);
     Trial mvn_zero{};
     mvn_zero.require_halt = true;
     mvn_zero.code = {0xE3E00000, 0xE5810000}; // MVN r0,#0; STR r0,[r1]
@@ -1026,6 +1037,15 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, mvn_zero, true, 94016, true));
     std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
     CHECK(results[0] == ~u32{0});
+    Trial mrs{};
+    mrs.require_halt = true;
+    mrs.code = {0xE10F0000, 0xE5810000}; // MRS r0,CPSR; STR r0,[r1]
+    for (int r = 0; r < 15; ++r) mrs.regs[r] = 0;
+    mrs.regs[1] = BUF_BASE;
+    mrs.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mrs, true, 94017, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == mj.cpu.hot.cpsr);
   } else {
     Trial arm7_mem{};
     arm7_mem.require_halt = true;
@@ -1077,6 +1097,15 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, multi, false, 74008, true));
     std::memcpy(arm7_words, mj.host(BUF_BASE + 4), sizeof(u32));
     CHECK(arm7_words[0] == 0xA5A5A5A5u);
+    Trial mrs{};
+    mrs.require_halt = true;
+    mrs.code = {0xE10F0000, 0xE5810000};
+    for (int r = 0; r < 15; ++r) mrs.regs[r] = 0;
+    mrs.regs[1] = BUF_BASE;
+    mrs.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mrs, false, 74009, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
+    CHECK(arm7_words[0] == mj.cpu.hot.cpsr);
   }
   Trial branch{};
   branch.thumb = true;

@@ -34,7 +34,7 @@ using ds::jit::CACHE_FIRST;
 using ds::jit::CACHE_FRAME;
 using ds::jit::CACHE_SAVED;
 struct N {
-  u32 op, rd, rn, rm, imm, shift, cond;
+  u32 op, rd, rn, rm, imm, shift, cond, rdlo;
   bool im, setflags, carry_valid, carry, carry_dynamic, reg_shift;
   ds::u8 shift_type;
 };
@@ -183,8 +183,8 @@ static bool native(u32 x, N &n, bool shifts) {
     n.im = true;
     return true;
   }
-  // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
-  // forms were the repeatable source of SF3000 crashes.
+  // Other BIC/MVN forms stay in the interpreter; complemented operands were
+  // the repeatable source of SF3000 crashes.
   if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 3 && n.op != 4 &&
       n.op != 5 && n.op != 6 && n.op != 7 && n.op != 8 && n.op != 9 &&
       n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
@@ -303,6 +303,18 @@ static bool native_thumb(u32 x, N &n) {
   return true;
 }
 static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
+  if (!thumb && arm9 && ds::arm::decode_arm(x) == AOp::Umull &&
+      !(x & (1u << 20))) {
+    const u32 hi = (x >> 16) & 15u, lo = (x >> 12) & 15u;
+    const u32 rs = (x >> 8) & 15u, rm = x & 15u;
+    if (hi == 15 || lo == 15 || rs == 15 || rm == 15 || hi == lo)
+      return false;
+    const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
+    if (op_env && std::strcmp(op_env, "all") && std::strtoul(op_env, nullptr, 10) != 17)
+      return false;
+    n.op = 17; n.rd = hi; n.rdlo = lo; n.rn = rs; n.rm = rm; n.cond = x >> 28;
+    return n.cond != 15;
+  }
   if (!thumb && arm9 && ds::arm::decode_arm(x) == AOp::Mul) {
     if ((x & (1u << 20)) || ((x >> 12) & 15) || ((x >> 16) & 15) == 15 ||
         ((x >> 8) & 15) == 15 || (x & 15) == 15 || (x >> 28) == 15)
@@ -630,6 +642,14 @@ static void note_data_dep(ds::jit::Block &b, u32 addr) {
     b.dep_overflow = true;
 }
 static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
+  if (n.op == 17) {
+    getr(e, T0, n.rm, cache_mask);
+    getr(e, T1, n.rn, cache_mask);
+    e.multu(T0, T1); e.nop(); e.nop(); e.mflo(T2); e.mfhi(T3);
+    putr(e, n.rdlo, T2, cache_mask);
+    putr(e, n.rd, T3, cache_mask);
+    return;
+  }
   if (n.op == 16) {
     getr(e, T0, n.rm, cache_mask);
     getr(e, T1, n.rn, cache_mask);
@@ -887,6 +907,10 @@ static bool native_ignored_mcr(u32 x, bool arm9) {
     return false;
   return ds::jit::shape::mcr_is_nop(x, true) || ((x >> 16) & 15) == 0;
 }
+static bool native_mrs_cpsr(u32 x) {
+  return ds::arm::decode_arm(x) == AOp::Mrs && !(x & (1u << 22)) &&
+         ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
+}
 static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
          (x & 0xf800u) == 0xe000u;
@@ -985,11 +1009,18 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!n.im && n.rm < CACHE_COUNT) cache_mask |= 1u << n.rm;
       if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11 && n.rd < CACHE_COUNT)
         cache_mask |= 1u << n.rd;
+      if (n.op == 17 && n.rdlo < CACHE_COUNT) cache_mask |= 1u << n.rdlo;
     }
     if (use_native && !thumb &&
         (!native_limit || candidates < native_limit) &&
         native_ignored_mcr(x, arm9))
       ++candidates;
+    if (use_native && !thumb &&
+        (!native_limit || candidates < native_limit) && native_mrs_cpsr(x)) {
+      ++candidates;
+      const u32 rd = (x >> 12) & 15u;
+      if (rd < CACHE_COUNT) cache_mask |= 1u << rd;
+    }
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, m) :
                                 native_arm_mem(x, key_pc(ks[i]), m);
@@ -1236,6 +1267,23 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_mrs_cpsr(is[q])) {
+      note_code_dep(b, pc + 8);
+      emit_timing(e, *jc.ctx, pc, false);
+      std::vector<size_t> skip;
+      emit_skip_if_false(e, is[q] >> 28, skip);
+      e.lw(T1, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      putr(e, (is[q] >> 12) & 15u, T1, cache_mask);
+      for (size_t p : skip) e.patch_branch(p, e.size());
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     ThumbMem mem{};
     bool native_mem = thumb ? native_thumb_mem(is[q], mem) :
                              native_arm_mem(is[q], pc, mem);
@@ -1313,7 +1361,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       std::vector<size_t> skip;
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
-      if (n.reg_shift || n.op == 16) e.addiu(R_BUDGET, R_BUDGET, -1);
+      if (n.reg_shift || n.op == 16 || n.op == 17)
+        e.addiu(R_BUDGET, R_BUDGET, -1);
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
       // Native timing must leave at the same boundary as the interpreter:
