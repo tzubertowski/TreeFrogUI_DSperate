@@ -385,6 +385,9 @@ static bool local_loop_branch(u32 x, u32 pc, u32 start) {
   const s32 off = static_cast<s32>(x << 8) >> 6;
   return pc + 8 + static_cast<u32>(off) == start;
 }
+static bool arm_branch(u32 x) {
+  return (x >> 28) != 15 && (x & 0x0e000000u) == 0x0a000000u;
+}
 struct B {
   size_t ip, kp, br;
   std::vector<u32> i, k;
@@ -513,6 +516,48 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       emit_timing(e, *jc.ctx, pc, false);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
+      ++native_count;
+      ++q;
+      continue;
+    }
+    if (use_native_branch && !thumb &&
+        (!native_limit || native_count < native_limit) && arm_branch(is[q])) {
+      note_code_dep(b, pc + 8);
+      std::vector<size_t> not_taken;
+      emit_skip_if_false(e, is[q] >> 28, not_taken);
+      if (is[q] & (1u << 24)) {
+        li(e, T0, pc + 4);
+        e.sw(T0, OR + 56, R_CTX);
+      }
+      const s32 off = static_cast<s32>(is[q] << 8) >> 6;
+      const u32 target = pc + 8 + static_cast<u32>(off);
+      li(e, T0, target + 8);
+      e.move(R_GUEST_PC, T0);
+      u32 code_after = 0;
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, false, &code_after);
+      if (refill) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
+      if (arm9) {
+        li(e, T0, code_after);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        e.addiu(T0, 0, 0);
+        e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
+      } else {
+        li(e, T0, target >> 15);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        li(e, T0, target >> 24);
+        e.sw(T0, offsetof(CpuContext, code_region), R_CTX);
+      }
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      const size_t taken = e.b();
+      e.nop();
+      for (size_t p : not_taken) e.patch_branch(p, e.size());
+      emit_timing(e, *jc.ctx, pc, false);
+      li(e, T0, pc + 12);
+      e.move(R_GUEST_PC, T0);
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      e.patch_branch(taken, e.size());
       ++native_count;
       ++q;
       continue;

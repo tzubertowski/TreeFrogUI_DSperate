@@ -783,6 +783,52 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 91002 : 71002, true));
   CHECK(mj.cpu.hot.regs[2] == 5);
+
+  t = Trial{};
+  t.require_halt = true;
+  t.code = {0xEA000001, 0xE3A00001, 0xE3A00002, 0xE3A00003,
+            0xE5890000}; // B to MOV r0,#3; store result
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[9] = BUF_BASE; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91005 : 71005, true));
+  u32 result = 0;
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == 3);
+
+  t = Trial{};
+  t.require_halt = true;
+  t.code = {0xEB000001, 0xE3A00001, 0xE3A00002, 0xE589E000}; // BL; store LR
+  for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+  t.regs[9] = BUF_BASE; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91006 : 71006, true));
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == CODE_BASE + 4);
+
+  if (a9) {
+    auto passes = [](u32 cond, u32 f) {
+      const bool n = f & 8, z = f & 4, c = f & 2, v = f & 1;
+      switch (cond) {
+      case 0: return z; case 1: return !z; case 2: return c; case 3: return !c;
+      case 4: return n; case 5: return !n; case 6: return v; case 7: return !v;
+      case 8: return c && !z; case 9: return !c || z; case 10: return n == v;
+      case 11: return n != v; case 12: return !z && n == v; default: return z || n != v;
+      }
+    };
+    for (u32 cond = 0; cond < 14; ++cond) {
+      for (u32 flags = 0; flags < 16; ++flags) {
+        t = Trial{};
+        t.require_halt = true;
+        t.cpsr = flags << 28;
+        t.code = {(cond << 28) | 0x0a000002, 0xE3A00001, 0xEA000001,
+                  0xE1A00000, 0xE3A00002, 0xE5890000};
+        for (int i = 0; i < 15; ++i) t.regs[i] = 0;
+        t.regs[9] = BUF_BASE; t.regs[13] = STACK;
+        CHECK(run_both(mi, mj, t, a9, 95000 + cond * 16 + flags, true));
+        std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+        CHECK(result == (passes(cond, flags) ? 2u : 1u));
+      }
+    }
+  }
   jit::detach(mj.nds);
   unsetenv("DS_MIPS_NATIVE_BRANCH");
 }
