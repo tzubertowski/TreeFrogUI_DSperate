@@ -219,6 +219,7 @@ struct Trial {
   std::vector<u32> code;   // ARM words or Thumb halfwords
   u32 regs[16];
   u32 cpsr;
+  u32 spsr = 0;
   u32 code_base = CODE_BASE;
   s32 budget = 1 << 24;
   bool code_in_r9 = false;
@@ -266,6 +267,7 @@ void load_trial(Machine& m, const Trial& t, bool a9) {
   for (int i = 0; i < 15; ++i) c.hot.regs[i] = t.regs[i];
   if (t.code_in_r9) c.hot.regs[9] = t.code_base;
   c.hot.cpsr = t.cpsr | 0x1F | (t.thumb ? 0x20 : 0);
+  c.hot.spsr = t.spsr;
   c.hot.regs[15] = t.code_base + (t.thumb ? 4 : 8);
   c.halted = false;
   c.hot.irq_pending = 0;
@@ -959,6 +961,15 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
   t.regs[1] = 0x12; t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 91015 : 71015, true));
+
+  t = Trial{};
+  t.require_halt = true;
+  t.spsr = 0xD3A5F017u;
+  t.code = {0xE14F0000, 0xE5810000}; // MRS r0,SPSR; STR r0,[r1]
+  t.regs[1] = BUF_BASE; t.regs[13] = STACK;
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91016 : 71016, true));
+  std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+  CHECK(result == t.spsr);
 
   t = Trial{};
   t.require_halt = true;

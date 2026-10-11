@@ -1267,6 +1267,10 @@ static bool native_mrs_cpsr(u32 x) {
   return ds::arm::decode_arm(x) == AOp::Mrs && !(x & (1u << 22)) &&
          ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
 }
+static bool native_mrs_spsr(u32 x) {
+  return ds::arm::decode_arm(x) == AOp::Mrs && (x & (1u << 22)) &&
+         ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
+}
 static bool native_msr_flags(u32 x) {
   const AOp op = ds::arm::decode_arm(x);
   return (op == AOp::MsrReg || op == AOp::MsrImm) &&
@@ -1678,12 +1682,14 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     if (use_native && !thumb &&
         (!native_limit || native_count < native_limit) &&
-        native_mrs_cpsr(is[q])) {
+        (native_mrs_cpsr(is[q]) || native_mrs_spsr(is[q]))) {
       note_code_dep(b, pc + 8);
       emit_timing(e, *jc.ctx, pc, false);
       std::vector<size_t> skip;
       emit_skip_if_false(e, is[q] >> 28, skip);
-      e.lw(T1, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      const u32 status = (is[q] & (1u << 22)) ?
+          offsetof(CpuContext, hot) + offsetof(JitHot, spsr) : ds::jit::OFF_CPSR;
+      e.lw(T1, status, R_CTX); e.nop();
       putr(e, (is[q] >> 12) & 15u, T1, cache_mask);
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
@@ -1880,6 +1886,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         return true;
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
           (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
+           native_mrs_spsr(is[i]) ||
            native_msr_flags(is[i]) || native_msr_control(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
