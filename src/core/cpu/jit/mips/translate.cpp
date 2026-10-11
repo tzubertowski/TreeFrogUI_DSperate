@@ -93,17 +93,25 @@ static bool native_thumb(u32 x, N &n) {
   const bool mov_imm = (h & 0xf800) == 0x2000;
   const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
   const bool imm8_arith = (h & 0xf800) == 0x3000 || (h & 0xf800) == 0x3800;
+  const bool cmp_imm8 = (h & 0xf800) == 0x2800;
   const bool imm3_arith = (h & 0xfe00) == 0x1c00 || (h & 0xfe00) == 0x1e00;
   const bool reg3_arith = (h & 0xfe00) == 0x1800 || (h & 0xfe00) == 0x1a00;
-  const bool high_mov = (h & 0xff00) == 0x4600 && ((h >> 8) & 3) == 2;
+  const bool high_op = (h & 0xfc00) == 0x4400 && ((h >> 8) & 3) < 3;
+  const u32 high_kind = (h >> 8) & 3;
+  const bool high_mov = high_op && high_kind == 2;
+  const bool high_add = high_op && high_kind == 0;
+  const bool high_cmp = high_op && high_kind == 1;
   const bool alu_reg = (h & 0xfc00) == 0x4000 &&
       (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
        ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 10 ||
        ((h >> 6) & 15) == 11 || ((h >> 6) & 15) == 12);
-  if (!mov_imm && !imm_shift && !imm8_arith && !imm3_arith && !alu_reg &&
-      !reg3_arith && !high_mov)
+  if (!mov_imm && !imm_shift && !imm8_arith && !cmp_imm8 && !imm3_arith && !alu_reg &&
+      !reg3_arith && !high_mov && !high_add && !high_cmp)
     return false;
   if (mov_imm || imm_shift || high_mov) n.op = 13;
+  else if (high_add) n.op = 4;
+  else if (high_cmp) n.op = 10;
+  else if (cmp_imm8) n.op = 10;
   else if (imm8_arith || imm3_arith || reg3_arith)
     n.op = (h & (imm8_arith ? 0x0800 : 0x0200)) ? 2 : 4;
   else n.op = (h >> 6) & 15;
@@ -111,7 +119,7 @@ static bool native_thumb(u32 x, N &n) {
   if (op_env && std::strcmp(op_env, "all") != 0 &&
       std::strtoul(op_env, nullptr, 10) != n.op)
     return false;
-  n.setflags = !high_mov;
+  n.setflags = !high_mov && !high_add;
   n.cond = 14;
   if (mov_imm) {
     n.rd = (h >> 8) & 7;
@@ -124,7 +132,7 @@ static bool native_thumb(u32 x, N &n) {
     n.shift_type = (h >> 11) & 3;
     n.carry_dynamic = n.shift_type != 0;
     n.carry_valid = n.carry_dynamic;
-  } else if (imm8_arith) {
+  } else if (imm8_arith || cmp_imm8) {
     n.rd = (h >> 8) & 7;
     n.rn = n.rd;
     n.imm = h & 255;
@@ -144,10 +152,12 @@ static bool native_thumb(u32 x, N &n) {
     n.rm = (h >> 3) & 7;
     if (((h >> 6) & 15) == 10 || ((h >> 6) & 15) == 11)
       n.rd = 15;
-  } else if (high_mov) {
+  } else if (high_mov || high_add || high_cmp) {
     n.rd = (h & 7) | ((h >> 4) & 8);
     n.rm = (h >> 3) & 15;
+    n.rn = n.rd;
     if (n.rd == 15 || n.rm == 15) return false;
+    if (high_cmp) n.rd = 15;
   }
   return true;
 }
@@ -407,6 +417,8 @@ static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
          (x & 0xf800u) == 0xe000u;
 }
+static bool thumb_bl_prefix(u32 x) { return (x & 0xf800u) == 0xf000u; }
+static bool thumb_bl_suffix(u32 x) { return (x & 0xf800u) == 0xf800u; }
 struct B {
   size_t ip, kp, br;
   std::vector<u32> i, k;
@@ -501,6 +513,41 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   const size_t loop_head = e.size();
   for (u32 q = 0; q < is.size();) {
     const u32 pc = key_pc(ks[q]);
+    if (use_native_branch && thumb && q + 1 < is.size() &&
+        (!native_limit || native_count + 2 <= native_limit) &&
+        thumb_bl_prefix(is[q]) && thumb_bl_suffix(is[q + 1])) {
+      note_code_dep(b, pc + 4);
+      note_code_dep(b, pc + 6);
+      emit_timing(e, *jc.ctx, pc, true);
+      const s32 high = static_cast<s32>((is[q] & 0x7ffu) << 21) >> 9;
+      const u32 target = pc + 4 + static_cast<u32>(high) +
+                         ((is[q + 1] & 0x7ffu) << 1);
+      li(e, T0, pc + 5);
+      e.sw(T0, OR + 56, R_CTX);
+      li(e, T0, target + 4);
+      e.move(R_GUEST_PC, T0);
+      u32 code_after = 0;
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, true, &code_after);
+      if (refill) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
+      if (arm9) {
+        li(e, T0, code_after);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        e.addiu(T0, 0, 0);
+        e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
+      } else {
+        li(e, T0, target >> 15);
+        e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+        li(e, T0, target >> 24);
+        e.sw(T0, offsetof(CpuContext, code_region), R_CTX);
+      }
+      ex.push_back(e.blez(R_BUDGET));
+      e.nop();
+      bx.push_back(e.b());
+      e.nop();
+      native_count += 2;
+      q += 2;
+      continue;
+    }
     if (use_native_branch && !thumb && (!native_limit || native_count < native_limit) &&
         local_loop_branch(is[q], pc, start)) {
       note_code_dep(b, pc + 8);

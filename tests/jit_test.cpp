@@ -893,6 +893,17 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(run_both(mi, mj, branch, a9, a9 ? 94002 : 74002, true));
   std::memcpy(results, mj.host(BUF_BASE), 8);
   CHECK(results[0] == 3 && results[1] == 0xA4A4A4A4u);
+  Trial call{};
+  call.thumb = true;
+  call.require_halt = true;
+  call.code = {0xF000, 0xF805, 0x2001, 0x600A, 0xE003,
+               0x46C0, 0x46C0, 0x2203, 0x4770};
+  for (int r = 0; r < 15; ++r) call.regs[r] = 0;
+  call.regs[1] = BUF_BASE;
+  call.regs[13] = STACK;
+  CHECK(run_both(mi, mj, call, a9, a9 ? 94003 : 74003, true));
+  std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == 3);
   for (u32 cond = 0; cond < 14; ++cond) {
     for (u32 flags = 0; flags < 16; ++flags) {
       Trial conditional{};
@@ -944,6 +955,42 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
       CHECK(run_both(mi, mj, cmp, a9,
                      (a9 ? 94900 : 74900) + instr + flags, true));
     }
+  }
+  Trial high_add{};
+  high_add.thumb = true;
+  high_add.require_halt = true;
+  high_add.code = {0x4480, 0x4640, 0x6030}; // ADD r8,r0; MOV r0,r8; STR r0,[r6]
+  for (int r = 0; r < 15; ++r) high_add.regs[r] = 0;
+  high_add.regs[0] = 1;
+  high_add.regs[6] = BUF_BASE;
+  high_add.regs[8] = 0x7fffffffu;
+  high_add.regs[13] = STACK;
+  CHECK(run_both(mi, mj, high_add, a9, a9 ? 94901 : 74901, true));
+  std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == 0x80000000u);
+  for (u32 flags = 0; flags < 16; ++flags) {
+    Trial high_cmp{};
+    high_cmp.thumb = true;
+    high_cmp.require_halt = true;
+    high_cmp.cpsr = flags << 28;
+    high_cmp.code = {0x4588}; // CMP r8,r1
+    for (int r = 0; r < 15; ++r) high_cmp.regs[r] = 0;
+    high_cmp.regs[8] = flags & 1 ? 0x80000000u : 0x7fffffffu;
+    high_cmp.regs[1] = flags & 2 ? 0xffffffffu : 0x80000001u;
+    high_cmp.regs[13] = STACK;
+    CHECK(run_both(mi, mj, high_cmp, a9,
+                   (a9 ? 94920 : 74920) + flags, true));
+  }
+  for (u32 value : {0u, 1u, 0x7fffffffu, 0x80000000u, 0xffffffffu}) {
+    Trial cmp_imm{};
+    cmp_imm.thumb = true;
+    cmp_imm.require_halt = true;
+    cmp_imm.code = {0x2801}; // CMP r0,#1
+    for (int r = 0; r < 15; ++r) cmp_imm.regs[r] = 0;
+    cmp_imm.regs[0] = value;
+    cmp_imm.regs[13] = STACK;
+    CHECK(run_both(mi, mj, cmp_imm, a9,
+                   (a9 ? 94950 : 74950) + value % 5, true));
   }
   const struct { u32 instr, input, output, dst; } arithmetic[] = {
       {0x3001, 0xffffffffu, 0, 0}, {0x3001, 0x7fffffffu, 0x80000000u, 0},
