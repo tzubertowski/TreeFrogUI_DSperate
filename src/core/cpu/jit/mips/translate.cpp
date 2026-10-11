@@ -1290,10 +1290,20 @@ static bool native_msr_spsr(u32 x) {
          ((x >> 16) & 15u) && (x >> 28) != 15u &&
          (op != AOp::MsrReg || (x & 15u) != 15u);
 }
-static bool native_arm_movs_pc_lr(u32 x) {
+static bool native_arm_exc_return_reg(u32 x) {
   return ds::arm::decode_arm(x) == AOp::DpImmShift && (x >> 28) == 14 &&
          (x & (1u << 20)) && ((x >> 21) & 15u) == 13 &&
          ((x >> 12) & 15u) == 15 && !(x & 0xff0u) && (x & 15u) != 15u;
+}
+static bool native_arm_exc_return_imm(u32 x) {
+  if (ds::arm::decode_arm(x) != AOp::DpImm || (x >> 28) != 14 ||
+      !(x & (1u << 20)) || ((x >> 12) & 15u) != 15u)
+    return false;
+  const u32 op = (x >> 21) & 15u;
+  return op == 2 || op == 4;
+}
+static bool native_arm_exc_return(u32 x) {
+  return native_arm_exc_return_reg(x) || native_arm_exc_return_imm(x);
 }
 static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
@@ -1429,9 +1439,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!m.load) score_reg(m.rd);
     }
     if (use_native_branch && !thumb &&
-        (!native_limit || candidates < native_limit) && native_arm_movs_pc_lr(x)) {
+        (!native_limit || candidates < native_limit) && native_arm_exc_return(x)) {
       ++candidates;
-      score_reg(x & 15u);
+      if (native_arm_exc_return_reg(x)) score_reg(x & 15u);
+      else if (((x >> 21) & 15u) != 13 && ((x >> 16) & 15u) != 15u)
+        score_reg((x >> 16) & 15u);
     }
   }
   if (use_native_branch && !thumb &&
@@ -1617,10 +1629,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     if (use_native_branch && !thumb &&
         (!native_limit || native_count < native_limit) &&
-        native_arm_movs_pc_lr(is[q])) {
+        native_arm_exc_return(is[q])) {
       note_code_dep(b, pc + 8);
       emit_timing(e, *jc.ctx, pc, false);
-      getr(e, T0, is[q] & 15u, cache_mask);
+      if (native_arm_exc_return_reg(is[q])) {
+        getr(e, T0, is[q] & 15u, cache_mask);
+      } else {
+        const u32 op = (is[q] >> 21) & 15u;
+        const u32 rn = (is[q] >> 16) & 15u;
+        if (rn == 15) e.move(T0, R_GUEST_PC);
+        else getr(e, T0, rn, cache_mask);
+        li(e, T1, ai(is[q]));
+        if (op == 2) e.subu(T0, T0, T1); else e.addu(T0, T0, T1);
+      }
       e.move(4, R_CTX); e.move(5, T0);
       e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_exc_return));
       spill_cached(e, cache_mask);
@@ -1628,7 +1649,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.jalr(R_RA, 25); e.nop();
       e.move(R_GUEST_PC, 2);
       e.lw(R_BUDGET, OB, R_CTX); e.nop();
-      e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
       reload_cached(e, cache_mask);
       bx.push_back(e.b()); e.nop();
       ++native_count;
@@ -1962,7 +1982,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
            native_msr_spsr(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
-        if (!thumb && native_arm_movs_pc_lr(is[i])) return true;
+        if (!thumb && native_arm_exc_return(is[i])) return true;
         if (!thumb && (arm_branch(is[i]) ||
             ((is[i] & 0x0FFFFFF0u) == 0x012FFF10u && (is[i] & 15u) != 15u)))
           return true;

@@ -971,11 +971,18 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
   CHECK(result == t.spsr);
 
-  t = Trial{};
-  t.require_halt = true;
-  t.regs[2] = HALT_STUB; t.regs[13] = STACK;
-  t.code = {0xE321F013, 0xE1A0E002, 0xE361F01F, 0xE1B0F00E}; // SVC SPSR restore + MOVS pc,lr
-  CHECK(run_both(mi, mj, t, a9, a9 ? 91019 : 71019, true));
+  static constexpr u32 exc_return[] = {0xE1B0F00E, 0xE25EF004, 0xE29EF004};
+  static constexpr u32 exc_target[] = {HALT_STUB, HALT_STUB + 4, HALT_STUB - 4};
+  for (u32 i = 0; i < 3; ++i) {
+    t = Trial{};
+    t.require_halt = true;
+    t.regs[2] = exc_target[i]; t.regs[13] = STACK;
+    // A wrong exception-return PC falls into a self-loop, not the generated
+    // fall-through halt branch, so this catches stale-PC restoration after
+    // the helper returns.
+    t.code = {0xE321F013, 0xE1A0E002, 0xE361F01F, exc_return[i], 0xEAFFFFFE};
+    CHECK(run_both(mi, mj, t, a9, (a9 ? 91019 : 71019) + i, true));
+  }
 
   t = Trial{};
   t.require_halt = true;
