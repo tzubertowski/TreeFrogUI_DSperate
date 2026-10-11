@@ -661,7 +661,7 @@ void native_thumb_smoke(Cpu which);
 void native_alu(int only = -1) {
   // Unconditional, non-S, non-PC ARM ALU forms: each immediate rotate edge
   // and each native register form gets exercised without relying on flags.
-  const u32 ops[] = {13, 15, 4, 2, 0, 1, 12, 14}; // MOV MVN ADD SUB AND EOR ORR BIC
+  const u32 ops[] = {13, 15, 4, 2, 0, 1, 12, 14, 3, 7}; // common ALU plus RSB/RSC
   const u32 rotates[] = {0, 1, 4, 8, 12, 15};
   // MIPS native lowering is opt-in in production.  Make this test exercise
   // the smallest risky form deterministically instead of depending on the
@@ -670,7 +670,7 @@ void native_alu(int only = -1) {
   setenv("DS_MIPS_NATIVE_ARM7", "1", 1);
   unsetenv("DS_MIPS_NATIVE_LIMIT");
 #if defined(__mips__)
-  const char *native_ops[] = {"0", "1", "4", "8", "9", "12", "13", "2", "all"};
+  const char *native_ops[] = {"0", "1", "2", "3", "4", "7", "8", "9", "12", "13", "all"};
 #else
   const char *native_ops[] = {"0"};
 #endif
@@ -684,7 +684,7 @@ void native_alu(int only = -1) {
       t.thumb = false;
       t.cpsr = 0;
       t.code.reserve(64);
-      for (u32 i = 0; i < 8; ++i) {
+      for (u32 i = 0; i < sizeof ops / sizeof ops[0]; ++i) {
         const u32 op = ops[i];
         t.code.push_back(alu_imm(op, i & 7, (i + 1) & 7, rotates[i % 6], 0x11u + i * 0x13u));
         t.code.push_back(alu_reg(op, (i + 2) & 7, i & 7, (i + 3) & 7));
@@ -719,7 +719,7 @@ void native_alu(int only = -1) {
           CHECK(run_both(mi, mj, pred, which == Cpu::ARM9,
                          (which == Cpu::ARM9 ? 92000 : 72000) + flags, true));
         }
-        for (u32 op : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 11u, 12u, 13u}) {
+        for (u32 op : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u}) {
           for (u32 form = 0; form < 3; ++form) {
             for (u32 flags = 0; flags < 16; ++flags) {
               Trial flag_case{};

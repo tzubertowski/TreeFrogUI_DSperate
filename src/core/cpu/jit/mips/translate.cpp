@@ -56,17 +56,17 @@ static bool native(u32 x, N &n, bool shifts) {
     return false;
   // BIC/MVN (14/15) remain interpreter fallbacks: their complemented operand
   // forms were the repeatable source of SF3000 crashes.
-  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 4 && n.op != 5 &&
-      n.op != 6 && n.op != 8 &&
-      n.op != 9 && n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
+  if (n.op != 0 && n.op != 1 && n.op != 2 && n.op != 3 && n.op != 4 &&
+      n.op != 5 && n.op != 6 && n.op != 7 && n.op != 8 && n.op != 9 &&
+      n.op != 10 && n.op != 11 && n.op != 12 && n.op != 13)
     return false;
   const bool test_op = n.op == 8 || n.op == 9 || n.op == 10 || n.op == 11;
   const bool logical_flags = n.op == 0 || n.op == 1 || n.op == 8 || n.op == 9 ||
                              n.op == 12 || n.op == 13;
   if (test_op && !n.setflags)
     return false;
-  if (n.setflags && !logical_flags && n.op != 2 && n.op != 4 &&
-      n.op != 5 && n.op != 6 &&
+  if (n.setflags && !logical_flags && n.op != 2 && n.op != 3 && n.op != 4 &&
+      n.op != 5 && n.op != 6 && n.op != 7 &&
       n.op != 10 && n.op != 11)
     return false;
   if (a == AOp::DpImm) {
@@ -311,6 +311,9 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 10:
     e.subu(T2, T0, T1);
     break;
+  case 3:
+    e.subu(T2, T1, T0);
+    break;
   case 4:
   case 11:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
@@ -361,6 +364,24 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.sll(T3, T3, 29);
     break;
   }
+  case 7: {
+    e.move(12, T1);
+    e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
+    e.nop();
+    e.srl(T3, T3, 29);
+    e.andi(T3, T3, 1);
+    e.xori(T3, T3, 1);
+    e.move(13, T3);
+    e.subu(T2, T1, T0);
+    e.move(T1, T2);
+    e.sltu(T3, 12, T0);
+    e.subu(T2, T2, 13);
+    e.sltu(T1, T1, 13);
+    e.or_(T3, T3, T1);
+    e.xori(T3, T3, 1);
+    e.sll(T3, T3, 29);
+    break;
+  }
   case 8:
     e.and_(T2, T0, T1);
     break;
@@ -381,8 +402,8 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.nor(T2, T1, 0);
   }
   if (n.setflags) {
-    const bool arithmetic = n.op == 2 || n.op == 4 || n.op == 5 || n.op == 6 ||
-                            n.op == 10 || n.op == 11;
+    const bool arithmetic = n.op == 2 || n.op == 3 || n.op == 4 || n.op == 5 ||
+                            n.op == 6 || n.op == 7 || n.op == 10 || n.op == 11;
     if (arithmetic) {
       if (n.op == 4 || n.op == 5 || n.op == 11) {
         if (n.op == 5) {
@@ -398,12 +419,20 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
           e.nor(T3, T3, 0);
           e.andi(T3, T3, 1);
           e.sll(T3, T3, 29);
+        } else if (n.op == 3) {
+          e.sltu(T3, T1, T0);
+          e.nor(T3, T3, 0);
+          e.andi(T3, T3, 1);
+          e.sll(T3, T3, 29);
         }
       }
-      const u32 rhs = n.op == 5 || n.op == 6 ? 12 : T1;
-      e.xor_(13, T0, rhs);
+      const bool reverse = n.op == 3 || n.op == 7;
+      const u32 lhs = reverse ? (n.op == 3 ? T1 : 12) : T0;
+      const u32 rhs = n.op == 5 || n.op == 6 || n.op == 7 ?
+                      (n.op == 7 ? T0 : 12) : (reverse ? T0 : T1);
+      e.xor_(13, lhs, rhs);
       if (n.op == 4 || n.op == 5 || n.op == 11) e.nor(13, 13, 0);
-      e.xor_(12, T0, T2);
+      e.xor_(12, lhs, T2);
       e.and_(12, 13, 12);
       e.srl(12, 12, 31);
       e.sll(12, 12, 28);
@@ -613,6 +642,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       bx.push_back(e.b());
       e.nop();
       native_count += 2;
+      rt().stats.instrs_translated += 2;
       q += 2;
       continue;
     }
@@ -652,6 +682,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
       ++native_count;
+      rt().stats.instrs_translated++;
       ++q;
       continue;
     }
@@ -694,6 +725,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.nop();
       bx.push_back(taken);
       ++native_count;
+      rt().stats.instrs_translated++;
       ++q;
       continue;
     }
@@ -736,6 +768,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       bx.push_back(taken);
       ++native_count;
+      rt().stats.instrs_translated++;
       ++q;
       continue;
     }
@@ -762,6 +795,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       // Keep a real instruction boundary between native guest operations.
       e.nop();
       ++native_count;
+      rt().stats.instrs_translated++;
       ++q;
       continue;
     }
@@ -775,6 +809,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.nop();
       e.nop();
       ++native_count;
+      rt().stats.instrs_translated++;
       ++q;
       continue;
     }
