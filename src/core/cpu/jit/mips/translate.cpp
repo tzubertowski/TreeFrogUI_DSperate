@@ -89,25 +89,33 @@ static bool native_thumb(u32 x, N &n) {
   const ds::u16 h = static_cast<ds::u16>(x);
   const bool mov_imm = (h & 0xf800) == 0x2000;
   const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
-  if (!mov_imm && !imm_shift) return false;
+  const bool alu_reg = (h & 0xfc00) == 0x4000 &&
+      (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
+       ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 12);
+  if (!mov_imm && !imm_shift && !alu_reg) return false;
+  if (mov_imm || imm_shift) n.op = 13;
+  else n.op = (h >> 6) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
   if (op_env && std::strcmp(op_env, "all") != 0 &&
-      std::strtoul(op_env, nullptr, 10) != 13)
+      std::strtoul(op_env, nullptr, 10) != n.op)
     return false;
-  n.op = 13;
   n.setflags = true;
   n.cond = 14;
   if (mov_imm) {
     n.rd = (h >> 8) & 7;
     n.imm = h & 255;
     n.im = true;
-  } else {
+  } else if (imm_shift) {
     n.rd = h & 7;
     n.rm = (h >> 3) & 7;
     n.shift = (h >> 6) & 31;
     n.shift_type = (h >> 11) & 3;
     n.carry_dynamic = n.shift_type != 0;
     n.carry_valid = n.carry_dynamic;
+  } else if (alu_reg) {
+    n.rd = h & 7;
+    n.rn = n.rd;
+    n.rm = (h >> 3) & 7;
   }
   return true;
 }
