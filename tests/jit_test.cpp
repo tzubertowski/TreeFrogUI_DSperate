@@ -623,6 +623,11 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xE16F0F11}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE16F0F11}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE16F0F11}, {0, 0x80000000u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // Multi-register Thumb PUSH/POP use one mapped-RAM block transfer.
+    {Cpu::ARM9, true, {0xB4F0, 0x2400, 0x2500, 0x2600, 0x2700, 0xBCF0}, {0, 0, 0, 0, 4, 5, 6, 7}},
+    {Cpu::ARM7, true, {0xB4F0, 0x2400, 0x2500, 0x2600, 0x2700, 0xBCF0}, {0, 0, 0, 0, 4, 5, 6, 7}},
+    {Cpu::ARM9, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
+    {Cpu::ARM7, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {
