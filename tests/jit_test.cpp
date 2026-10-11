@@ -973,6 +973,12 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
 
   t = Trial{};
   t.require_halt = true;
+  t.regs[2] = HALT_STUB; t.regs[13] = STACK;
+  t.code = {0xE321F013, 0xE1A0E002, 0xE361F01F, 0xE1B0F00E}; // SVC SPSR restore + MOVS pc,lr
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91019 : 71019, true));
+
+  t = Trial{};
+  t.require_halt = true;
   t.spsr = 0x12345678u; t.regs[1] = BUF_BASE; t.regs[4] = 0xa5b6c7d8u;
   t.regs[13] = STACK;
   t.code = {0xE321F013, 0xE169F004, 0xE14F0000, 0xE5810000};

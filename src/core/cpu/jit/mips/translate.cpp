@@ -21,6 +21,7 @@ extern "C" void jit_h_st8(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" void jit_h_st16(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" void jit_h_st32(ds::CpuContext *, ds::u32, ds::u32);
 extern "C" ds::u32 jit_h_mips_indirect_branch(ds::CpuContext *, ds::u32, ds::u32);
+extern "C" ds::u32 jit_h_mips_exc_return(ds::CpuContext *, ds::u32);
 namespace {
 using ds::CpuContext;
 using ds::s32;
@@ -1289,6 +1290,11 @@ static bool native_msr_spsr(u32 x) {
          ((x >> 16) & 15u) && (x >> 28) != 15u &&
          (op != AOp::MsrReg || (x & 15u) != 15u);
 }
+static bool native_arm_movs_pc_lr(u32 x) {
+  return ds::arm::decode_arm(x) == AOp::DpImmShift && (x >> 28) == 14 &&
+         (x & (1u << 20)) && ((x >> 21) & 15u) == 13 &&
+         ((x >> 12) & 15u) == 15 && !(x & 0xff0u) && (x & 15u) != 15u;
+}
 static bool thumb_branch(u32 x) {
   return ((x & 0xf000u) == 0xd000u && ((x >> 8) & 15u) < 14u) ||
          (x & 0xf800u) == 0xe000u;
@@ -1421,6 +1427,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       score_reg(m.rn);
       if (m.reg) score_reg(m.rm);
       if (!m.load) score_reg(m.rd);
+    }
+    if (use_native_branch && !thumb &&
+        (!native_limit || candidates < native_limit) && native_arm_movs_pc_lr(x)) {
+      ++candidates;
+      score_reg(x & 15u);
     }
   }
   if (use_native_branch && !thumb &&
@@ -1599,6 +1610,27 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.move(R_GUEST_PC, T0);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native_branch && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_arm_movs_pc_lr(is[q])) {
+      note_code_dep(b, pc + 8);
+      emit_timing(e, *jc.ctx, pc, false);
+      getr(e, T0, is[q] & 15u, cache_mask);
+      e.move(4, R_CTX); e.move(5, T0);
+      e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_exc_return));
+      spill_cached(e, cache_mask);
+      e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+      e.jalr(R_RA, 25); e.nop();
+      e.move(R_GUEST_PC, 2);
+      e.lw(R_BUDGET, OB, R_CTX); e.nop();
+      e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+      reload_cached(e, cache_mask);
+      bx.push_back(e.b()); e.nop();
       ++native_count;
       rt().stats.instrs_translated++;
       ++q;
@@ -1930,6 +1962,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
            native_msr_spsr(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
+        if (!thumb && native_arm_movs_pc_lr(is[i])) return true;
         if (!thumb && (arm_branch(is[i]) ||
             ((is[i] & 0x0FFFFFF0u) == 0x012FFF10u && (is[i] & 15u) != 15u)))
           return true;

@@ -521,6 +521,13 @@ extern "C" u32 jit_h_mips_indirect_branch(CpuContext* cpu, u32 target,
   return cpu->hot.regs[15];
 }
 
+extern "C" u32 jit_h_mips_exc_return(CpuContext* cpu, u32 target) {
+  cpu->restore_cpsr();
+  target = (target & ~1u) | ((cpu->hot.cpsr >> 5) & 1u);
+  cpu->jump(target, true);
+  return cpu->hot.regs[15];
+}
+
 // DS_JIT_WARM=N: lookups of a key before it is translated; 1 (the default)
 // translates on first sight. Counted on the C side (every cold execution
 // reaches it: the native paths exit for cold code), so at 2 a key's first
