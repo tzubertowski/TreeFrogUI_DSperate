@@ -221,14 +221,17 @@ static void li(MipsEmitter &e, u32 r, u32 v) {
   e.lui(r, v >> 16);
   e.ori(r, r, v);
 }
+static u32 arm9_code_cost(const CpuContext &c, u32 pc, bool thumb) {
+  const u32 fetch_pc = pc + (thumb ? 4 : 8);
+  const ds::u8 t = c.timing9[fetch_pc >> 12][0];
+  return thumb && (fetch_pc & 2u) ? 0 :
+         t == 255 ? (!(fetch_pc & 31u) ? 3 : 1) : t;
+}
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb) {
   u32 cost;
-  if (c.which == ds::Cpu::ARM9) {
-    const u32 fetch_pc = pc + (thumb ? 4 : 8);
-    const ds::u8 t = c.timing9[fetch_pc >> 12][0];
-    cost = thumb && (fetch_pc & 2u) ? 0 :
-           t == 255 ? (!(fetch_pc & 31u) ? 3 : 1) : t;
-  } else {
+  if (c.which == ds::Cpu::ARM9)
+    cost = arm9_code_cost(c, pc, thumb);
+  else {
     cost = c.timing7[pc >> 15][thumb ? 1 : 3];
   }
   e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(cost));
@@ -268,8 +271,25 @@ static void note_code_dep(ds::jit::Block &b, u32 addr) {
       return;
     }
   if (b.ndep < ds::jit::Block::DEP_MAX) {
-    b.dep_page[b.ndep] = page;
-    b.dep_kind[b.ndep++] = ds::mem::Timing::RETIME_CODE;
+    const u32 i = b.ndep;
+    b.dep_page[i] = page;
+    b.dep_kind[i] = ds::mem::Timing::RETIME_CODE;
+    b.ndep = static_cast<ds::u8>(i + 1);
+  } else
+    b.dep_overflow = true;
+}
+static void note_data_dep(ds::jit::Block &b, u32 addr) {
+  const u32 page = addr >> 12;
+  for (u32 i = 0; i < b.ndep; ++i)
+    if (b.dep_page[i] == page) {
+      b.dep_kind[i] |= ds::mem::Timing::RETIME_DATA;
+      return;
+    }
+  if (b.ndep < ds::jit::Block::DEP_MAX) {
+    const u32 i = b.ndep;
+    b.dep_page[i] = page;
+    b.dep_kind[i] = ds::mem::Timing::RETIME_DATA;
+    b.ndep = static_cast<ds::u8>(i + 1);
   } else
     b.dep_overflow = true;
 }
@@ -771,6 +791,38 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       rt().stats.instrs_translated++;
       ++q;
       continue;
+    }
+    if (use_native && arm9 && thumb &&
+        (!native_limit || native_count < native_limit) &&
+        (is[q] & 0xf800u) == 0x4800u) {
+      const u32 literal = ((pc + 4) & ~3u) + ((is[q] & 0xffu) << 2);
+      u8 *p = jc.ctx->page_table.read_ptr(literal);
+      if (p && (literal >> 12) == (start >> 12)) {
+        N n{};
+        n.op = 13;
+        n.rd = (is[q] >> 8) & 7;
+        n.im = true;
+        n.imm = 0;
+        std::memcpy(&n.imm, p, sizeof n.imm);
+        note_code_dep(b, literal);
+        note_data_dep(b, literal);
+        emit_timing(e, *jc.ctx, pc, true);
+        emit_n(e, n, cache_mask);
+        const u32 nc = arm9_code_cost(*jc.ctx, pc, true);
+        const u32 nd = jc.ctx->timing9[literal >> 12][2];
+        const s32 combined = static_cast<s32>(nc) + static_cast<s32>(nd) - 6;
+        const u32 total = combined > static_cast<s32>(nc) && combined > static_cast<s32>(nd) ?
+                          static_cast<u32>(combined) : nc > nd ? nc : nd;
+        if (total > nc) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(total - nc));
+        e.addiu(R_GUEST_PC, R_GUEST_PC, 2);
+        ex.push_back(e.blez(R_BUDGET));
+        e.nop();
+        e.nop();
+        ++native_count;
+        rt().stats.instrs_translated++;
+        ++q;
+        continue;
+      }
     }
     N n{};
     if (use_native && (!native_limit || native_count < native_limit) &&

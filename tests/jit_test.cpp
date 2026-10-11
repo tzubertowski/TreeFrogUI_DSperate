@@ -993,6 +993,16 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(run_both(mi, mj, pc_add, a9, a9 ? 94902 : 74902, true));
   std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
   CHECK(results[0] == CODE_BASE + 8);
+  Trial literal{};
+  literal.thumb = true;
+  literal.require_halt = true;
+  literal.code = {0x4801, 0x6008, 0xE002, 0x46C0, 0x5678, 0x1234};
+  for (int r = 0; r < 15; ++r) literal.regs[r] = 0;
+  literal.regs[1] = BUF_BASE;
+  literal.regs[13] = STACK;
+  CHECK(run_both(mi, mj, literal, a9, a9 ? 94905 : 74905, true));
+  std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == 0x12345678u);
   Trial sp_add{};
   sp_add.thumb = true;
   sp_add.require_halt = true;
