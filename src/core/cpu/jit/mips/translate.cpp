@@ -323,17 +323,23 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
     n.accumulate = decoded == AOp::Umlal || decoded == AOp::Smlal;
     return n.cond != 15;
   }
-  if (!thumb && arm9 && ds::arm::decode_arm(x) == AOp::Mul) {
-    if ((x & (1u << 20)) || ((x >> 12) & 15) || ((x >> 16) & 15) == 15 ||
-        ((x >> 8) & 15) == 15 || (x & 15) == 15 || (x >> 28) == 15)
+  if (!thumb && arm9 && (decoded == AOp::Mul || decoded == AOp::Mla)) {
+    const bool acc = decoded == AOp::Mla;
+    const u32 rd = (x >> 16) & 15u, rn = (x >> 12) & 15u;
+    const u32 rs = (x >> 8) & 15u, rm = x & 15u;
+    if ((!acc && rn) || rd == 15 || (acc && rn == 15) || rs == 15 || rm == 15 ||
+        (x >> 28) == 15)
       return false;
     const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
     if (op_env && std::strcmp(op_env, "all") && std::strtoul(op_env, nullptr, 10) != 16)
       return false;
     n.op = 16;
-    n.rd = (x >> 16) & 15;
-    n.rn = (x >> 8) & 15;
-    n.rm = x & 15;
+    n.rd = rd;
+    n.rn = rs;
+    n.rm = rm;
+    n.rdlo = acc ? rn : 0;
+    n.accumulate = acc;
+    n.setflags = x & (1u << 20);
     n.cond = x >> 28;
     return n.rd != 15;
   }
@@ -681,6 +687,16 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     getr(e, T0, n.rm, cache_mask);
     getr(e, T1, n.rn, cache_mask);
     e.multu(T0, T1); e.nop(); e.nop(); e.mflo(T2);
+    if (n.accumulate) { getr(e, T0, n.rdlo, cache_mask); e.addu(T2, T2, T0); }
+    if (n.setflags) {
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      li(e, T1, 0x3fffffffu); e.and_(T0, T0, T1);
+      e.srl(T1, T2, 31); e.sll(T1, T1, 31); e.or_(T0, T0, T1);
+      const size_t nonzero = e.bnez(T2); e.nop();
+      li(e, T1, 0x40000000u); e.or_(T0, T0, T1);
+      e.patch_branch(nonzero, e.size());
+      e.sw(T0, ds::jit::OFF_CPSR, R_CTX);
+    }
     putr(e, n.rd, T2, cache_mask);
     return;
   }
@@ -1038,6 +1054,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (n.op != 8 && n.op != 9 && n.op != 10 && n.op != 11 && n.rd < CACHE_COUNT)
         cache_mask |= 1u << n.rd;
       if (n.op == 17 && n.rdlo < CACHE_COUNT) cache_mask |= 1u << n.rdlo;
+      if (n.op == 16 && n.accumulate && n.rdlo < CACHE_COUNT)
+        cache_mask |= 1u << n.rdlo;
     }
     if (use_native && !thumb &&
         (!native_limit || candidates < native_limit) &&
@@ -1390,7 +1408,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       emit_skip_if_false(e, n.cond, skip);
       emit_n(e, n, cache_mask);
       if (n.reg_shift || n.op == 16 || n.op == 17)
-        e.addiu(R_BUDGET, R_BUDGET, -(n.op == 17 && n.setflags ? 3 : 1));
+        e.addiu(R_BUDGET, R_BUDGET, -(n.setflags && (n.op == 16 || n.op == 17) ? 3 : 1));
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, thumb ? 2 : 4);
       // Native timing must leave at the same boundary as the interpreter:

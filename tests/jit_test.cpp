@@ -1077,6 +1077,27 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
       CHECK(results[0] == long_mul_lo[i] && results[1] == long_mul_hi[i]);
       CHECK((results[2] & 0xf0000000u) == long_mul_flags[i]);
     }
+    const struct { u32 instr, a, b, acc, out, cpsr, flags; } mla_cases[] = {
+        {0xe0225493u, 0x12345678u, 0x10u, 0xf0000001u, 0x13456781u,
+         0x30000000u, 0x30000000u},
+        {0xe0325493u, 0u, 0u, 0u, 0u, 0x10000000u, 0x50000000u},
+    };
+    for (u32 i = 0; i < sizeof mla_cases / sizeof mla_cases[0]; ++i) {
+      Trial t{};
+      t.require_halt = true;
+      t.cpsr = mla_cases[i].cpsr;
+      t.code = {mla_cases[i].instr, 0xe5862000u, 0xe10f7000u, 0xe5867004u};
+      t.regs[2] = 0xdeadbeefu;
+      t.regs[3] = mla_cases[i].a;
+      t.regs[4] = mla_cases[i].b;
+      t.regs[5] = mla_cases[i].acc;
+      t.regs[6] = BUF_BASE;
+      t.regs[13] = STACK;
+      CHECK(run_both(mi, mj, t, true, 94040 + i, true));
+      std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 2);
+      CHECK(results[0] == mla_cases[i].out);
+      CHECK((results[1] & 0xf0000000u) == mla_cases[i].flags);
+    }
     Trial mvn_zero{};
     mvn_zero.require_halt = true;
     mvn_zero.code = {0xE3E00000, 0xE5810000}; // MVN r0,#0; STR r0,[r1]
