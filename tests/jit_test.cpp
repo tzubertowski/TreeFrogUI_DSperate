@@ -801,17 +801,17 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
             0x6030, 0x6071, 0x60b2, 0x60f3,
             0x2080, 0x2181, 0x2280, 0x400a, 0x6132,
             0x404a, 0x6172, 0x2280, 0x420a, 0x430a,
-            0x61b2, 0x46c0};
+            0x61b2, 0x4690, 0x4640, 0x61f0, 0x46c0};
   // Immediate moves/add, immediate shifts, AND/EOR/TST/ORR and stores.
   for (int i = 0; i < 15; ++i) t.regs[i] = 0;
   t.regs[6] = BUF_BASE;
   t.regs[13] = STACK;
   CHECK(run_both(mi, mj, t, a9, a9 ? 94001 : 74001, true));
-  u32 results[7]{};
+  u32 results[8]{};
   std::memcpy(results, mj.host(BUF_BASE), sizeof results);
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
-        results[6] == 0x81);
+        results[6] == 0x81 && results[7] == 0x81);
   const struct { u32 instr, input, output, dst; } arithmetic[] = {
       {0x3001, 0xffffffffu, 0, 0}, {0x3001, 0x7fffffffu, 0x80000000u, 0},
       {0x3801, 0, 0xffffffffu, 0}, {0x3801, 0x80000000u, 0x7fffffffu, 0},

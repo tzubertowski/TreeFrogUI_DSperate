@@ -91,12 +91,14 @@ static bool native_thumb(u32 x, N &n) {
   const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
   const bool imm8_arith = (h & 0xf800) == 0x3000 || (h & 0xf800) == 0x3800;
   const bool imm3_arith = (h & 0xfe00) == 0x1c00 || (h & 0xfe00) == 0x1e00;
+  const bool high_mov = (h & 0xff00) == 0x4600 && ((h >> 8) & 3) == 2;
   const bool alu_reg = (h & 0xfc00) == 0x4000 &&
       (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
        ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 12);
-  if (!mov_imm && !imm_shift && !imm8_arith && !imm3_arith && !alu_reg)
+  if (!mov_imm && !imm_shift && !imm8_arith && !imm3_arith && !alu_reg &&
+      !high_mov)
     return false;
-  if (mov_imm || imm_shift) n.op = 13;
+  if (mov_imm || imm_shift || high_mov) n.op = 13;
   else if (imm8_arith || imm3_arith)
     n.op = (h & (imm8_arith ? 0x0800 : 0x0200)) ? 2 : 4;
   else n.op = (h >> 6) & 15;
@@ -104,7 +106,7 @@ static bool native_thumb(u32 x, N &n) {
   if (op_env && std::strcmp(op_env, "all") != 0 &&
       std::strtoul(op_env, nullptr, 10) != n.op)
     return false;
-  n.setflags = true;
+  n.setflags = !high_mov;
   n.cond = 14;
   if (mov_imm) {
     n.rd = (h >> 8) & 7;
@@ -131,6 +133,10 @@ static bool native_thumb(u32 x, N &n) {
     n.rd = h & 7;
     n.rn = n.rd;
     n.rm = (h >> 3) & 7;
+  } else if (high_mov) {
+    n.rd = (h & 7) | ((h >> 4) & 8);
+    n.rm = (h >> 3) & 15;
+    if (n.rd == 15 || n.rm == 15) return false;
   }
   return true;
 }
