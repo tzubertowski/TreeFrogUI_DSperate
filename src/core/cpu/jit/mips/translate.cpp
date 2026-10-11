@@ -89,11 +89,16 @@ static bool native_thumb(u32 x, N &n) {
   const ds::u16 h = static_cast<ds::u16>(x);
   const bool mov_imm = (h & 0xf800) == 0x2000;
   const bool imm_shift = (h & 0xe000) == 0 && ((h >> 11) & 3) != 3;
+  const bool imm8_arith = (h & 0xf800) == 0x3000 || (h & 0xf800) == 0x3800;
+  const bool imm3_arith = (h & 0xfe00) == 0x1c00 || (h & 0xfe00) == 0x1e00;
   const bool alu_reg = (h & 0xfc00) == 0x4000 &&
       (((h >> 6) & 15) == 0 || ((h >> 6) & 15) == 1 ||
        ((h >> 6) & 15) == 8 || ((h >> 6) & 15) == 12);
-  if (!mov_imm && !imm_shift && !alu_reg) return false;
+  if (!mov_imm && !imm_shift && !imm8_arith && !imm3_arith && !alu_reg)
+    return false;
   if (mov_imm || imm_shift) n.op = 13;
+  else if (imm8_arith || imm3_arith)
+    n.op = (h & (imm8_arith ? 0x0800 : 0x0200)) ? 2 : 4;
   else n.op = (h >> 6) & 15;
   const char *op_env = std::getenv("DS_MIPS_NATIVE_OP");
   if (op_env && std::strcmp(op_env, "all") != 0 &&
@@ -112,6 +117,16 @@ static bool native_thumb(u32 x, N &n) {
     n.shift_type = (h >> 11) & 3;
     n.carry_dynamic = n.shift_type != 0;
     n.carry_valid = n.carry_dynamic;
+  } else if (imm8_arith) {
+    n.rd = (h >> 8) & 7;
+    n.rn = n.rd;
+    n.imm = h & 255;
+    n.im = true;
+  } else if (imm3_arith) {
+    n.rd = h & 7;
+    n.rn = (h >> 3) & 7;
+    n.imm = (h >> 6) & 7;
+    n.im = true;
   } else if (alu_reg) {
     n.rd = h & 7;
     n.rn = n.rd;
@@ -268,9 +283,15 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 4:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
     // Equivalent modulo-32-bit form keeps ADD native without that opcode.
-    e.nor(T1, T1, 0);
-    e.subu(T2, T0, T1);
-    e.addiu(T2, T2, -1);
+    if (n.setflags) {
+      e.nor(T3, T1, 0);
+      e.subu(T2, T0, T3);
+      e.addiu(T2, T2, -1);
+    } else {
+      e.nor(T1, T1, 0);
+      e.subu(T2, T0, T1);
+      e.addiu(T2, T2, -1);
+    }
     break;
   case 8:
     e.and_(T2, T0, T1);
@@ -292,6 +313,40 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.nor(T2, T1, 0);
   }
   if (n.setflags) {
+    const bool arithmetic = n.op == 2 || n.op == 4;
+    if (arithmetic) {
+      if (n.op == 4) {
+        e.sltu(T3, T2, T0);
+        e.andi(T3, T3, 1);
+        e.sll(T3, T3, 29);
+        e.xor_(12, T0, T1);
+        e.nor(12, 12, 0);
+      } else {
+        e.sltu(T3, T0, T1);
+        e.nor(T3, T3, 0);
+        e.andi(T3, T3, 1);
+        e.sll(T3, T3, 29);
+        e.xor_(12, T0, T1);
+      }
+      e.xor_(13, T0, T2);
+      e.and_(12, 12, 13);
+      e.srl(12, 12, 3);
+      e.or_(T3, T3, 12);
+      e.lw(T1, ds::jit::OFF_CPSR, R_CTX);
+      e.nop();
+      li(e, T0, 0x0fffffffu);
+      e.and_(T1, T1, T0);
+      e.srl(T0, T2, 31);
+      e.sll(T0, T0, 31);
+      e.or_(T1, T1, T0);
+      size_t nz = e.bnez(T2);
+      e.nop();
+      li(e, T0, 0x40000000u);
+      e.or_(T1, T1, T0);
+      e.patch_branch(nz, e.size());
+      e.or_(T1, T1, T3);
+      e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
+    } else {
     e.lw(T1, ds::jit::OFF_CPSR, R_CTX);
     li(e, T0, n.carry_valid ? 0x1fffffffu : 0x3fffffffu);
     e.and_(T1, T1, T0);
@@ -314,6 +369,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       e.or_(T1, T1, T0);
     }
     e.sw(T1, ds::jit::OFF_CPSR, R_CTX);
+    }
   }
   if (n.op != 8 && n.op != 9) putr(e, n.rd, T2, cache_mask);
 }

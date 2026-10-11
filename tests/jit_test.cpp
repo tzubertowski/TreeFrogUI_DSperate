@@ -812,6 +812,28 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
         results[6] == 0x81);
+  const struct { u32 instr, input, output, dst; } arithmetic[] = {
+      {0x3001, 0xffffffffu, 0, 0}, {0x3001, 0x7fffffffu, 0x80000000u, 0},
+      {0x3801, 0, 0xffffffffu, 0}, {0x3801, 0x80000000u, 0x7fffffffu, 0},
+      {0x1c41, 0x7fffffffu, 0x80000000u, 1}, {0x1e41, 0, 0xffffffffu, 1}};
+  for (u32 i = 0; i < sizeof arithmetic / sizeof arithmetic[0]; ++i) {
+    Trial arith{};
+    arith.thumb = true;
+    arith.require_halt = true;
+    arith.code = {arithmetic[i].instr, 0x6030u + arithmetic[i].dst};
+    for (int r = 0; r < 15; ++r) arith.regs[r] = 0;
+    arith.regs[0] = arithmetic[i].input;
+    arith.regs[6] = BUF_BASE;
+    arith.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arith, a9, (a9 ? 94100 : 74100) + i, true));
+    u32 result = 0;
+    std::memcpy(&result, mj.host(BUF_BASE), sizeof result);
+    if (result != arithmetic[i].output)
+      std::fprintf(stderr, "thumb arith case %u ins=%04x input=%08x got=%08x expected=%08x\n",
+                   i, arithmetic[i].instr, arithmetic[i].input,
+                   result, arithmetic[i].output);
+    CHECK(result == arithmetic[i].output);
+  }
   jit::detach(mj.nds);
 }
 #endif
