@@ -1008,6 +1008,16 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(results[0] == 3 && results[1] == 0x80000000u && results[2] == 0 &&
         results[3] == 0xffffffffu && results[4] == 0x80 && results[5] == 1 &&
         results[6] == 0x81 && results[7] == 0x81);
+  Trial push_pop{};
+  push_pop.thumb = true;
+  push_pop.require_halt = true;
+  push_pop.code = {0xB401, 0x2000, 0xBC02, 0x6031}; // PUSH {r0}; POP {r1}; STR r1,[r6]
+  push_pop.regs[0] = 0x12345678u;
+  push_pop.regs[6] = BUF_BASE;
+  push_pop.regs[13] = STACK;
+  CHECK(run_both(mi, mj, push_pop, a9, a9 ? 94002 : 74002, true));
+  std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+  CHECK(results[0] == 0x12345678u);
   for (u32 op = 0; op < 16; ++op) {
     const u32 max_amount = (op >= 2 && op <= 4) || op == 7 ? 5 : 1;
     for (u32 i = 0; i < max_amount; ++i) {

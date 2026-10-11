@@ -48,6 +48,26 @@ struct ThumbMem {
 };
 static bool native_thumb_mem(u32 x, ThumbMem &m) {
   const u32 h = static_cast<ds::u16>(x);
+  if ((h & 0xfe00u) == 0xb400u || (h & 0xfe00u) == 0xbc00u) {
+    const bool pop = h & 0x0800u;
+    const u32 list = h & 0xffu;
+    const bool extra = h & 0x0100u;
+    // shortcut: single-register PUSH/POP only, expand when block-transfer timing is native.
+    if (__builtin_popcount(list) + extra != 1 || (pop && extra)) return false;
+    m.rn = 13;
+    m.rd = extra ? 14 : static_cast<u32>(__builtin_ctz(list));
+    m.width = 4;
+    m.load = pop;
+    m.writeback = true;
+    if (pop) {
+      m.post = true;
+      m.imm = 4;
+    } else {
+      m.neg = true;
+      m.imm = 4;
+    }
+    return true;
+  }
   if ((h & 0xfc00u) == 0x5000u) {
     static constexpr ds::u8 widths[8] = {4, 2, 1, 1, 4, 2, 1, 2};
     const u32 op = (h >> 9) & 7;
@@ -509,6 +529,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     have_offset = true;
   }
   if (m.post) {
+    if (!have_offset) li(e, T1, m.imm);
     if (m.neg) e.subu(T3, T0, T1);
     else e.addu(T3, T0, T1);
     e.sw(T3, 52, R_SP);
@@ -521,6 +542,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     else e.addu(T0, T0, T1);
   } else if (m.imm) {
     e.addiu(T0, T0, m.neg ? -static_cast<s32>(m.imm) : static_cast<s32>(m.imm));
+    if (m.writeback) e.sw(T0, 52, R_SP);
   }
   e.move(R_FP, T0);                    // original EA survives helper calls
   if (m.width == 4) { e.srl(T0, T0, 2); e.sll(T0, T0, 2); }
