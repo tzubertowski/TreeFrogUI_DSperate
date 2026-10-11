@@ -967,6 +967,65 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(arm_memory_results[0] == 0x66u);
     CHECK(arm_memory_results[1] == 0x66u);
     CHECK(arm_memory_results[2] == BUF_BASE + 4); // post-index base writeback
+    Trial cp15_nop{};
+    cp15_nop.require_halt = true;
+    cp15_nop.code = {0xEE07CF9A, 0xEE070F3E, 0x0E07CF9A};
+    for (int r = 0; r < 15; ++r) cp15_nop.regs[r] = 0;
+    cp15_nop.regs[13] = STACK;
+    CHECK(run_both(mi, mj, cp15_nop, true, 94010, true));
+    Trial bx{};
+    bx.require_halt = true;
+    bx.code = {0xE3A00001, 0xE12FFF13, 0xE3A01077, 0xE3A02066,
+               0xE5842000};
+    for (int r = 0; r < 15; ++r) bx.regs[r] = 0;
+    bx.regs[3] = CODE_BASE + 12;
+    bx.regs[4] = BUF_BASE;
+    bx.regs[13] = STACK;
+    CHECK(run_both(mi, mj, bx, true, 94011, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == 0x66u && mj.cpu.hot.regs[1] == 0);
+    bx.code[1] = 0x012FFF13; // EQ BX, but Z is clear: execute fall-through.
+    CHECK(run_both(mi, mj, bx, true, 94012, true));
+    CHECK(mj.cpu.hot.regs[1] == 0x77u);
+    Trial multi{};
+    multi.require_halt = true;
+    multi.code = {0xE8A10001, 0xE5841000}; // STMIA with writeback, then save Rn
+    for (int r = 0; r < 15; ++r) multi.regs[r] = 0;
+    multi.regs[0] = 0x66u;
+    multi.regs[1] = BUF_BASE;
+    multi.regs[4] = BUF_BASE + 8;
+    multi.regs[13] = STACK;
+    CHECK(run_both(mi, mj, multi, true, 94013, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == 0x66u);
+    std::memcpy(&results[0], mj.host(BUF_BASE + 8), sizeof(u32));
+    CHECK(results[0] == BUF_BASE + 4);
+    multi.code = {0xE8D10001, 0xE5840004}; // LDMIA^ then store the loaded value
+    multi.regs[1] = BUF_BASE;
+    multi.regs[4] = BUF_BASE;
+    CHECK(run_both(mi, mj, multi, true, 94014, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE + 4), sizeof(u32));
+    CHECK(results[0] == 0xA5A5A5A5u);
+    Trial mul{};
+    mul.require_halt = true;
+    mul.code = {0xE0020493, 0xE5812000}; // MUL r2,r3,r4; STR r2,[r1]
+    for (int r = 0; r < 15; ++r) mul.regs[r] = 0;
+    mul.regs[1] = BUF_BASE;
+    mul.regs[3] = 0x12345678u;
+    mul.regs[4] = 0x10u;
+    mul.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mul, true, 94015, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == 0x23456780u);
+    Trial mvn_zero{};
+    mvn_zero.require_halt = true;
+    mvn_zero.code = {0xE3E00000, 0xE5810000}; // MVN r0,#0; STR r0,[r1]
+    for (int r = 0; r < 15; ++r) mvn_zero.regs[r] = 0;
+    mvn_zero.regs[1] = BUF_BASE;
+    mvn_zero.regs[13] = STACK;
+    CHECK(run_both(mi, mj, mvn_zero, true, 94016, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
+    CHECK(results[0] == ~u32{0});
   } else {
     Trial arm7_mem{};
     arm7_mem.require_halt = true;
@@ -988,6 +1047,36 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, arm7_thumb_mem, false, 74005, true));
     std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof arm7_words);
     CHECK(arm7_words[0] == 0x5Au && arm7_words[1] == 0x5Au);
+    Trial bx{};
+    bx.require_halt = true;
+    bx.code = {0xE3A00001, 0xE12FFF13, 0xE3A01077, 0xE3A02066,
+               0xE5842000};
+    for (int r = 0; r < 15; ++r) bx.regs[r] = 0;
+    bx.regs[3] = CODE_BASE + 12;
+    bx.regs[4] = BUF_BASE;
+    bx.regs[13] = STACK;
+    CHECK(run_both(mi, mj, bx, false, 74006, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
+    CHECK(arm7_words[0] == 0x66u);
+    Trial multi{};
+    multi.require_halt = true;
+    multi.code = {0xE8A10001, 0xE5841000};
+    for (int r = 0; r < 15; ++r) multi.regs[r] = 0;
+    multi.regs[0] = 0x66u;
+    multi.regs[1] = BUF_BASE;
+    multi.regs[4] = BUF_BASE + 8;
+    multi.regs[13] = STACK;
+    CHECK(run_both(mi, mj, multi, false, 74007, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
+    CHECK(arm7_words[0] == 0x66u);
+    std::memcpy(arm7_words, mj.host(BUF_BASE + 8), sizeof(u32));
+    CHECK(arm7_words[0] == BUF_BASE + 4);
+    multi.code = {0xE8D10001, 0xE5840004};
+    multi.regs[1] = BUF_BASE;
+    multi.regs[4] = BUF_BASE;
+    CHECK(run_both(mi, mj, multi, false, 74008, true));
+    std::memcpy(arm7_words, mj.host(BUF_BASE + 4), sizeof(u32));
+    CHECK(arm7_words[0] == 0xA5A5A5A5u);
   }
   Trial branch{};
   branch.thumb = true;

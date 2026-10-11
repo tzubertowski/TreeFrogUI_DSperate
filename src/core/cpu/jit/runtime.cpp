@@ -515,6 +515,12 @@ extern "C" u32 jit_h_fallback(CpuContext* cpu, u32 instr, u32 key) {
   return cpu->jumped ? 1 : 0;
 }
 
+extern "C" u32 jit_h_mips_indirect_branch(CpuContext* cpu, u32 target,
+                                            u32 interwork) {
+  cpu->jump(target, interwork != 0);
+  return cpu->hot.regs[15];
+}
+
 // DS_JIT_WARM=N: lookups of a key before it is translated; 1 (the default)
 // translates on first sight. Counted on the C side (every cold execution
 // reaches it: the native paths exit for cold code), so at 2 a key's first

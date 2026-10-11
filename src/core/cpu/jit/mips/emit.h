@@ -32,6 +32,8 @@ public:
   void or_(u32 d,u32 s,u32 t){w(0x00000025u|(s<<21)|(t<<16)|(d<<11));}
   void xor_(u32 d,u32 s,u32 t){w(0x00000026u|(s<<21)|(t<<16)|(d<<11));}
   void nor(u32 d,u32 s,u32 t){w(0x00000027u|(s<<21)|(t<<16)|(d<<11));}
+  void multu(u32 s,u32 t){w(0x00000019u|(s<<21)|(t<<16));}
+  void mflo(u32 d){w(0x00000012u|(d<<11));}
   void move(u32 d,u32 s){addu(d,s,0);}
   void lw(u32 d,s32 o,u32 s){w(0x8c000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
   void sw(u32 d,s32 o,u32 s){w(0xac000000u|(s<<21)|(d<<16)|(static_cast<u32>(o)&0xffff));}
