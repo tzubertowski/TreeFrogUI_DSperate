@@ -1261,6 +1261,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(run_both(mi, mj, push_pop, a9, a9 ? 94002 : 74002, true));
   std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
   CHECK(results[0] == 0x12345678u);
+  if (!a9) {
+    Trial iwram_push_pop{};
+    iwram_push_pop.thumb = true;
+    iwram_push_pop.require_halt = true;
+    iwram_push_pop.code = {0xB40F, 0x2000, 0x2100, 0x2200, 0x2300, 0xBC0F,
+                           0x6030, 0x6071, 0x60B2, 0x60F3};
+    iwram_push_pop.regs[0] = 0x12345678u;
+    iwram_push_pop.regs[1] = 0x87654321u;
+    iwram_push_pop.regs[2] = 0xA5A55A5Au;
+    iwram_push_pop.regs[3] = 0x5A5AA5A5u;
+    iwram_push_pop.regs[6] = BUF_BASE;
+    iwram_push_pop.regs[13] = 0x0380FF00u;
+    CHECK(run_both(mi, mj, iwram_push_pop, false, 74003, true));
+    std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 4);
+    CHECK(results[0] == 0x12345678u && results[1] == 0x87654321u &&
+          results[2] == 0xA5A55A5Au && results[3] == 0x5A5AA5A5u);
+  }
   for (u32 op = 0; op < 16; ++op) {
     const u32 max_amount = (op >= 2 && op <= 4) || op == 7 ? 5 : 1;
     for (u32 i = 0; i < max_amount; ++i) {
@@ -1826,6 +1843,11 @@ void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
 
 int main(int argc, char** argv) {
 #if defined(__mips__)
+  if (argc > 1 && (std::strcmp(argv[1], "thumbsmoke9") == 0 ||
+                   std::strcmp(argv[1], "thumbsmoke7") == 0)) {
+    native_thumb_smoke(argv[1][10] == '9' ? Cpu::ARM9 : Cpu::ARM7);
+    return 0;
+  }
   if (argc > 1 && (std::strcmp(argv[1], "nativepc9") == 0 ||
                    std::strcmp(argv[1], "nativepc7") == 0)) {
     const bool a9 = argv[1][8] == '9';

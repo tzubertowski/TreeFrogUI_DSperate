@@ -185,12 +185,13 @@ static bool native_arm_block(u32 x) {
          (x >> 28) != 15 && !(x & (1u << 22)) && rn != 15 &&
          !(list & (1u << 15)) && !(list & (1u << rn));
 }
-static bool native_thumb_block(u32 x) {
+static bool native_thumb_block(u32 x, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
   if ((h & 0xfe00u) != 0xb400u && (h & 0xfe00u) != 0xbc00u) return false;
   const bool pop = h & 0x0800u, extra = h & 0x0100u;
   const u32 n = __builtin_popcount(h & 0xffu) + static_cast<u32>(extra);
-  return n > 1 && !(pop && extra);
+  // shortcut: ARM9 Thumb block remains interpreted, enable after dual-core timing regression is fixed.
+  return n > 1 && !(pop && extra) && !arm9;
 }
 static int arm7_data_slot(const CpuContext &c, u32 pc, bool thumb,
                           u32 width, bool load) {
@@ -1587,7 +1588,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!m.load) score_reg(m.rd);
     }
     if (use_native_mem && (!native_limit || candidates < native_limit) &&
-        thumb && native_thumb_block(x)) {
+        thumb && native_thumb_block(x, arm9)) {
       ++candidates;
       score_reg(13);
       const u32 h = static_cast<ds::u16>(x);
@@ -2048,7 +2049,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
-    if (use_native_mem && thumb && native_thumb_block(is[q]) &&
+    if (use_native_mem && thumb && native_thumb_block(is[q], arm9) &&
         (!native_limit || native_count < native_limit)) {
       note_code_dep(b, pc + 4);
       b.dep_overflow = true;
@@ -2254,7 +2255,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
         if (!thumb && native_arm_block(is[i])) return true;
-        if (thumb && native_thumb_block(is[i])) return true;
+        if (thumb && native_thumb_block(is[i], arm9)) return true;
         ThumbMem m{};
         bool candidate = thumb ? native_thumb_mem(is[i], m, arm9) :
             native_arm_mem(is[i], key_pc(ks[i]), m, arm9);
