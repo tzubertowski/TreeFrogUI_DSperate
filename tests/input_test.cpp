@@ -313,6 +313,10 @@ void test_default_r2_swaps_screen() {
   in.poll_platform();
   actions = in.take_actions();
   CHECK(actions.size() == 1 && actions[0] == Action::ScreenSwap);
+  CHECK(!(in.frame().buttons & (1u << io::Io::BTN_R)));
+  keys = 1u << 11; // R1 still reaches the guest's R button.
+  in.poll_platform();
+  CHECK(in.frame().buttons & (1u << io::Io::BTN_R));
 }
 
 // "mod" alone: the modifier released with nothing else pressed while it was

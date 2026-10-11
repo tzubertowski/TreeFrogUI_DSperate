@@ -204,6 +204,7 @@ private:
   int sf_shmid_ = -1;
   volatile std::uint32_t* sf_keys_ = nullptr;
   std::uint32_t sf_prev_ = 0;
+  bool sf_r2_hotkey_ = false;
   bool lid_ = false, mic_key_ = false, mic_pad_ = false, ff_key_ = false, ff_pad_ = false;
   u32  noise_ = 0x2545F491;
   SDL_GameController* pad_ = nullptr;

@@ -363,12 +363,14 @@ void Input::poll_platform() {
   };
   set_raw(4, B::BTN_UP); set_raw(6, B::BTN_DOWN); set_raw(7, B::BTN_LEFT); set_raw(5, B::BTN_RIGHT);
   set_raw(13, B::BTN_A); set_raw(14, B::BTN_B); set_raw(12, B::BTN_X); set_raw(15, B::BTN_Y);
-  set_raw(10, B::BTN_L); set_raw(8, B::BTN_L); set_raw(11, B::BTN_R); set_raw(9, B::BTN_R);
+  set_raw(10, B::BTN_L); set_raw(8, B::BTN_L);
   set_raw(3, B::BTN_START); set_raw(0, B::BTN_SELECT);
   if (changed & (1u << 9)) {
     Bind r2; r2.kind = Bind::PadAxis; r2.code = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
-    pad_down(r2, (raw >> 9) & 1);
+    sf_r2_hotkey_ = pad_down(r2, (raw >> 9) & 1);
   }
+  if (changed & ((1u << 9) | (1u << 11)))
+    set(B::BTN_R, (raw & (1u << 11)) || ((raw & (1u << 9)) && !sf_r2_hotkey_));
   if ((raw & (1u << 3)) && (raw & 1u)) quit_ = true;
 }
 
