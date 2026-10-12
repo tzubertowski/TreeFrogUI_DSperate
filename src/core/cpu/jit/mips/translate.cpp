@@ -1579,6 +1579,13 @@ static bool native_mrc(u32 x, bool arm9) {
          ((x >> 8) & 15u) == 15u && ((x >> 12) & 15u) != 15u &&
          native_op_enabled(24, arm9);
 }
+static bool native_mcr_halt(u32 x, bool arm9) {
+  if (!arm9 || (x >> 28) == 15 || ds::arm::decode_arm(x) != AOp::Mcr ||
+      ((x >> 8) & 15u) != 15u) return false;
+  const u32 crn = (x >> 16) & 15u, crm = x & 15u, opc2 = (x >> 5) & 7u;
+  return crn == 7 && ((crm == 0 && opc2 == 4) || (crm == 8 && opc2 == 2)) &&
+         native_op_enabled(25, arm9);
+}
 static bool native_mrs_cpsr(u32 x) {
   return ds::arm::decode_arm(x) == AOp::Mrs && !(x & (1u << 22)) &&
          ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
@@ -1765,6 +1772,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
       score_reg((x >> 12) & 15u);
     }
+    if (use_native && (!native_limit || candidates < native_limit) &&
+        native_mcr_halt(x, arm9)) ++candidates;
     if (use_native && !thumb &&
         (!native_limit || candidates < native_limit) &&
         native_ignored_mcr(x, arm9))
@@ -2159,6 +2168,30 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     if (use_native && !thumb &&
         (!native_limit || native_count < native_limit) &&
+        native_mcr_halt(is[q], arm9)) {
+      note_code_dep(b, pc + 8);
+      emit_trace(e, is[q], pc, false, cache_mask);
+      emit_timing(e, *jc.ctx, pc, false);
+      std::vector<size_t> skip;
+      emit_skip_if_false(e, is[q] >> 28, skip);
+      e.addiu(R_BUDGET, R_BUDGET, -2);
+      e.addiu(T0, 0, 1);
+      e.sb(T0, ds::jit::OFF_HALTED, R_CTX);
+      e.lw(T1, offsetof(CpuContext, hot) + offsetof(ds::JitHot, alerts), R_CTX);
+      e.nop(); e.ori(T1, T1, ds::jit::ALERT_HALTED);
+      e.sw(T1, offsetof(CpuContext, hot) + offsetof(ds::JitHot, alerts), R_CTX);
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.b()); e.nop();
+      for (size_t p : skip) e.patch_branch(p, e.size());
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) &&
         native_ignored_mcr(is[q], arm9)) {
       note_code_dep(b, pc + 8);
       emit_timing(e, *jc.ctx, pc, false);
@@ -2487,7 +2520,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         return true;
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
           (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
-           native_mrs_spsr(is[i]) ||
+           native_mrs_spsr(is[i]) || native_mcr_halt(is[i], arm9) ||
            native_mrc(is[i], arm9) || native_msr_flags(is[i]) || native_msr_control(is[i]) ||
            native_msr_spsr(is[i])))
         return true;

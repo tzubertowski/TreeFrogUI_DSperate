@@ -998,6 +998,13 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
       t.code = {mrc[i], 0xE2800001};
       CHECK(run_both(mi, mj, t, true, 91230 + i, true));
     }
+    t = Trial{}; t.require_halt = true; t.regs[13] = STACK;
+    t.code = {0xEE070F90}; // MCR p15,0,r0,c7,c0,4: wait for interrupt.
+    CHECK(run_both(mi, mj, t, true, 91233, true));
+    t = Trial{}; t.require_halt = true; t.regs[13] = STACK;
+    t.code = {0x0E070F90, 0xE2800001}; // conditional WFI is skipped with Z clear.
+    CHECK(run_both(mi, mj, t, true, 91234, true));
+    CHECK(mj.cpu.hot.regs[0] == 1);
     t = Trial{}; t.require_halt = true; t.cpsr = 0x40000000u;
     t.regs[0] = 0x12345678u; t.regs[13] = STACK;
     t.code = {0x11003281, 0xE2800001}; // SMLABBNE skipped with Z set.
