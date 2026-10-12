@@ -804,6 +804,23 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
 }
 static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
                         bool internal = false);
+static void emit_scaled_wait(MipsEmitter &e, u32 count) {
+  const u32 scale = count - 1;
+  if (!scale) { e.move(T2, 0); return; }
+  if ((scale & (scale - 1)) == 0) {
+    u32 shift = 0;
+    for (u32 value = scale; value > 1; value >>= 1) ++shift;
+    e.sll(T2, T2, shift);
+  } else if (((scale + 1) & scale) == 0) {
+    u32 shift = 0;
+    for (u32 value = scale + 1; value > 1; value >>= 1) ++shift;
+    e.sll(T3, T2, shift);
+    e.subu(T2, T3, T2);
+  } else {
+    li(e, T3, scale);
+    e.multu(T2, T3); e.nop(); e.nop(); e.mflo(T2);
+  }
+}
 static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
                                  u32 start, bool load, u32 n, bool thumb) {
   // The earlier 2 KB boundary guard keeps every beat in this timing region.
@@ -813,8 +830,7 @@ static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.lbu(T2, 3, T1);
   if (n == 2) e.addu(T0, T0, T2);
   else {
-    li(e, T3, n - 1);
-    e.multu(T2, T3); e.nop(); e.nop(); e.mflo(T2);
+    emit_scaled_wait(e, n);
     e.addu(T0, T0, T2);
   }
   const u32 nc = c.timing7[pc >> 15][thumb ? 0 : 2];
@@ -933,8 +949,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.lbu(T2, (load ? 0 : 4) + 3, T1);
     if (n == 2) e.addu(T0, T0, T2);
     else {
-      li(e, T3, n - 1);
-      e.multu(T2, T3); e.nop(); e.nop(); e.mflo(T2);
+      emit_scaled_wait(e, n);
       e.addu(T0, T0, T2);
     }
     const u32 nc = arm9_code_cost(c, pc, thumb);
