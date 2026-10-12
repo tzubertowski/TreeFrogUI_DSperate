@@ -389,6 +389,13 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // then skips over the inline function to the generated halt branch.
     {Cpu::ARM9, false, {0xEB000001, 0xEA000002, 0xE1A00000, 0xE2800001, 0xE12FFF1E}, {0}, CODE_BASE, 1 << 24, false, true},
     {Cpu::ARM7, false, {0xEB000001, 0xEA000002, 0xE1A00000, 0xE2800001, 0xE12FFF1E}, {0}, CODE_BASE, 1 << 24, false, true},
+    // ARM9 BLX immediate exercises the interpreter fallback's mixed-state transfer.
+    {Cpu::ARM9, false, {0xFA000000, 0xE2800001, 0x46C04708}, {0, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    // Return through the LR written by BLX, then continue in ARM state.
+    {Cpu::ARM9, false, {0xFA000000, 0xE1A0F001, 0x46C04770}, {0, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    // H=1 selects the halfword at +10 rather than +8.
+    {Cpu::ARM9, false, {0xFB000000, 0xE2800001, 0x470846C0}, {0, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM9, false, {0xFB000000, 0xE1A0F001, 0x477046C0}, {0, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
     // Translate across a 4 KiB guest page boundary; the trailing halt branch
     // starts on the next page.
     {Cpu::ARM9, false, {0xE3A00001, 0xE2800002}, {0}, CODE_BASE + 0x2ff8, 1 << 24, false, true},
@@ -523,7 +530,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // unequal bytes so the rotation is visible in the final register state.
     {Cpu::ARM7, false, {0xE1C020B0, 0xE2800001, 0xE1D010B0}, {BUF_BASE, 0, 0x1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE1C020B0, 0xE2800001, 0xE1D010B0}, {BUF_BASE, 0, 0x1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    // shortcut: ARM7 signed-halfword loads still use the interpreter fallback.
+    // ARM7 odd-address LDRSH returns the signed low byte, unlike LDRH rotation.
     {Cpu::ARM7, false, {0xE1C020B0, 0xE2800001, 0xE1D010F0}, {BUF_BASE, 0, 0x1280, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
 
     // `LDM ^` / `STM ^` -- the user-bank transfer. The interpreter switches to
@@ -582,18 +589,13 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xE880FFFF}, {BUF_BASE + 0x7D0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE880FFFF}, {BUF_BASE + 0x7D0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE321F0D2, 0xE8C0FFFF, 0xE321F0DF}, {BUF_BASE + 0x7D0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    // `LDM ^` with writeback and r13 as the base -- why the inline path
-    // excludes writeback. The interpreter writes the base back while still
-    // switched to user mode, so the new base lands in the USER r13 and the
-    // entered mode's r13 is left alone; an inline path would write the mode's
-    // own r13, which is a different register. Architecturally UNPREDICTABLE,
-    // so either is defensible -- but they must not disagree, and the only way
-    // to not disagree is to keep the interpreter.
+    // `LDM ^` writeback with r13 as the base must update USER r13 while leaving
+    // the exception mode's active r13 unchanged.
     {Cpu::ARM9, false, {0xE321F0D2, 0xE1A0D000, 0xE8FD00FF, 0xE321F0DF}, {BUF_BASE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE321F0D2, 0xE1A0D000, 0xE8FD00FF, 0xE321F0DF}, {BUF_BASE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE321F0D3, 0xE1A0E000, 0xE8FE00FF, 0xE321F0DF}, {BUF_BASE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    // The store counterpart, where the interpreter writes the base back AFTER
-    // switching home and an inline path would agree -- kept on the same rule.
+    // The STM counterpart writes back to the active exception-mode r13 after
+    // returning from the user-bank transfer.
     {Cpu::ARM9, false, {0xE321F0D2, 0xE1A0D000, 0xE8ED00FF, 0xE321F0DF}, {BUF_BASE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // Conditional, taken and not taken (the condition wraps the whole body,
     // mode guard included).
@@ -973,6 +975,62 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[2] = HALT_STUB;
   t.regs[13] = STACK; t.code = {0xE5812000, 0xE591F000}; // STR target; LDR pc,[r1]
   CHECK(run_both(mi, mj, t, a9, a9 ? 91024 : 71024, true));
+  t = Trial{};
+  t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[3] = BUF_BASE + 0x100;
+  t.regs[13] = STACK;
+  t.code = {0xE28F0004, 0xE5810004, 0xE8B18004, 0xE5831000};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 71142 : 71143, true));
+  u32 ldm_pc_wb = 0;
+  std::memcpy(&ldm_pc_wb, mj.host(BUF_BASE + 0x100), sizeof ldm_pc_wb);
+  CHECK(ldm_pc_wb == BUF_BASE + 8);
+  t = Trial{};
+  t.require_halt = true; t.regs[0] = 0x12345678u; t.regs[1] = BUF_BASE;
+  t.regs[2] = 0xa5a55a5au; t.regs[6] = BUF_BASE + 0x100; t.regs[13] = STACK;
+  t.code = {0xE8810007, 0xE891001A, 0xE5863000, 0xE5864004, 0xE5861008};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91146 : 71146, true));
+  u32 base_overlap[3]{};
+  std::memcpy(base_overlap, mj.host(BUF_BASE + 0x100), sizeof base_overlap);
+  CHECK(base_overlap[0] == BUF_BASE && base_overlap[1] == 0xa5a55a5au &&
+        base_overlap[2] == 0x12345678u);
+  t = Trial{};
+  t.require_halt = true; t.regs[0] = BUF_BASE; t.regs[1] = 0x12345000u;
+  t.regs[2] = 0x87654321u; t.regs[13] = STACK; t.regs[14] = HALT_STUB;
+  t.code = {0xE5801000, 0xE5802004, 0xE321F0D2, 0xE8D03000, 0xE8C03000,
+            0xE321F0DF, 0xE580D008, 0xE580E00C};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91147 : 71147, true));
+  u32 user_bank[4]{};
+  std::memcpy(user_bank, mj.host(BUF_BASE), sizeof user_bank);
+  CHECK(user_bank[0] == 0x12345000u && user_bank[1] == 0x87654321u &&
+        user_bank[2] == 0x87654321u && user_bank[3] == HALT_STUB);
+  t = Trial{};
+  t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[6] = BUF_BASE + 0x100;
+  t.regs[13] = STACK;
+  t.code = {0xE321F0D2, 0xE8F10003, 0xE321F0DF, 0xE5860000, 0xE5861004};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91148 : 71148, true));
+  u32 loaded_base[2]{};
+  std::memcpy(loaded_base, mj.host(BUF_BASE + 0x100), sizeof loaded_base);
+  CHECK(loaded_base[0] == 0xa5a5a5a5u && loaded_base[1] == 0xa4a4a4a4u);
+  t = Trial{};
+  t.require_halt = true; t.regs[1] = HALT_STUB; t.regs[13] = STACK;
+  t.code = {0xF12FFF11, 0xE2800001}; // NV BX is skipped, not taken unconditionally.
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91144 : 71144, true));
+  if (!a9) {
+    t = Trial{};
+    t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[13] = STACK;
+    t.code = {0xE3A00080, 0xE5C10001, 0xE1D120F1, 0xE5812000};
+    CHECK(run_both(mi, mj, t, false, 71140, true));
+    u32 signed_half = 0;
+    std::memcpy(&signed_half, mj.host(BUF_BASE), sizeof signed_half);
+    CHECK(signed_half == 0xffffff80u);
+
+    t = Trial{};
+    t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[13] = STACK;
+    t.code = {0xE3A00080, 0xE5C10003, 0xE3A00001, 0xE5C10002,
+              0xE1D120F2, 0xE5812000};
+    CHECK(run_both(mi, mj, t, false, 71141, true));
+    std::memcpy(&signed_half, mj.host(BUF_BASE), sizeof signed_half);
+    CHECK(signed_half == 0xffff8001u);
+  }
   for (u32 op : {2u, 4u}) for (bool flags : {false, true})
     for (u32 lhs : {0x7fffffffu, 0x80000000u})
       for (const auto& imm : {std::pair<u32, u32>{0, 1}, {0, 0xff}, {7, 2}, {8, 0xff}}) {
@@ -1017,12 +1075,44 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   t.thumb = true; t.require_halt = true;
   t.regs[14] = HALT_STUB; t.code = {0x4770}; // BX lr.
   CHECK(run_both(mi, mj, t, a9, a9 ? 91032 : 71032, true));
+  for (bool signed_mul : {false, true}) for (bool accumulate : {false, true})
+    for (bool setflags : {false, true})
+      for (u32 rhs : {0u, 0x7fu, 0x8000u, 0x800000u,
+                      0x80000000u, 0xffffff80u}) {
+        t = Trial{};
+        t.require_halt = true;
+        const u32 instr = 0xE0800090u | (signed_mul ? 0 : 1u << 22) |
+            (accumulate ? 1u << 21 : 0) | (setflags ? 1u << 20 : 0) |
+            (6u << 16) | (7u << 12) | (4u << 8) | 3u;
+        t.code = {instr, 0xE5816000u, 0xE5817004u,
+                  0xE10F5000u, 0xE5815008u};
+        t.cpsr = 0xf0000000u;
+        t.regs[1] = BUF_BASE; t.regs[3] = 0x87654321u; t.regs[4] = rhs;
+        t.regs[6] = 0x12345678u; t.regs[7] = 0xabcdef01u; t.regs[13] = STACK;
+        CHECK(run_both(mi, mj, t, a9,
+                       (a9 ? 91100 : 71100) + signed_mul * 64 +
+                           accumulate * 32 + setflags * 16 + rhs / 0x1000000u,
+                       true));
+      }
   if (a9) {
     t = Trial{};
     t.thumb = true; t.require_halt = true;
     t.regs[0] = HALT_STUB; t.code = {0x4780}; // BLX r0.
     CHECK(run_both(mi, mj, t, true, 91033, true));
     CHECK(mj.cpu.hot.regs[14] == CODE_BASE + 3);
+
+    t = Trial{};
+    t.require_halt = true; t.regs[14] = HALT_STUB; t.regs[13] = STACK;
+    t.code = {0xE12FFF3E}; // BLX lr must branch using old lr, then replace it.
+    CHECK(run_both(mi, mj, t, true, 91034, true));
+    CHECK(mj.cpu.hot.regs[14] == CODE_BASE + 4);
+
+    t = Trial{};
+    t.require_halt = true; t.cpsr = 0; t.regs[1] = HALT_STUB;
+    t.regs[14] = 0x12345678; t.regs[13] = STACK;
+    t.code = {0x012FFF31, 0xE2800001}; // EQ BLX r1 is not taken; LR is unchanged.
+    CHECK(run_both(mi, mj, t, true, 91035, true));
+    CHECK(mj.cpu.hot.regs[14] == 0x12345678);
   }
   if (std::getenv("DS_MIPS_PC_ONLY")) {
     jit::detach(mj.nds);
@@ -1276,7 +1366,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   CHECK(run_both(mi, mj, push_pop, a9, a9 ? 94002 : 74002, true));
   std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
   CHECK(results[0] == 0x12345678u);
+  Trial pop_pc{};
+  pop_pc.thumb = true;
+  pop_pc.require_halt = true;
+  pop_pc.code = {0x9000, 0xBD00}; // STR r0,[sp]; POP {pc} to the halt trampoline.
+  pop_pc.regs[0] = (CODE_BASE + 4) | (a9 ? 1u : 0u);
+  pop_pc.regs[13] = BUF_BASE;
+  CHECK(run_both(mi, mj, pop_pc, a9, a9 ? 94006 : 74006, true));
   if (!a9) {
+    Trial thumb_pop_pc{};
+    thumb_pop_pc.thumb = true;
+    thumb_pop_pc.require_halt = true;
+    thumb_pop_pc.code = {0xA101, 0x3101, 0x9101, 0xBD01, 0x466A, 0x601A};
+    thumb_pop_pc.regs[3] = BUF_BASE + 0x100;
+    thumb_pop_pc.regs[13] = BUF_BASE;
+    CHECK(run_both(mi, mj, thumb_pop_pc, false, 74007, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE + 0x100), sizeof(u32));
+    CHECK(results[0] == BUF_BASE + 8);
     Trial iwram_push_pop{};
     iwram_push_pop.thumb = true;
     iwram_push_pop.require_halt = true;
@@ -1292,6 +1398,16 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 4);
     CHECK(results[0] == 0x12345678u && results[1] == 0x87654321u &&
           results[2] == 0xA5A55A5Au && results[3] == 0x5A5AA5A5u);
+    Trial arm7_thumb_ldrsb_half{};
+    arm7_thumb_ldrsb_half.thumb = true;
+    arm7_thumb_ldrsb_half.require_halt = true;
+    arm7_thumb_ldrsb_half.code = {0x2380, 0x704B, 0x2001, 0x5E0A, 0x6032};
+    arm7_thumb_ldrsb_half.regs[1] = BUF_BASE;
+    arm7_thumb_ldrsb_half.regs[6] = BUF_BASE + 4;
+    arm7_thumb_ldrsb_half.regs[13] = STACK;
+    CHECK(run_both(mi, mj, arm7_thumb_ldrsb_half, false, 74005, true));
+    std::memcpy(&results[0], mj.host(BUF_BASE + 4), sizeof(u32));
+    CHECK(results[0] == 0xffffff80u);
     Trial thumb_stm_ldm{};
     thumb_stm_ldm.thumb = true;
     thumb_stm_ldm.require_halt = true;
@@ -1325,6 +1441,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     }
   }
   if (a9) {
+    Trial thumb_stm_ldm_a9{};
+    thumb_stm_ldm_a9.thumb = true;
+    thumb_stm_ldm_a9.require_halt = true;
+    thumb_stm_ldm_a9.code = {0xC40F, 0x2000, 0x2100, 0x2200, 0x2300,
+                             0x3C10, 0xCC0F, 0x6030, 0x6071, 0x60B2, 0x60F3};
+    thumb_stm_ldm_a9.regs[0] = 0x12345678u;
+    thumb_stm_ldm_a9.regs[1] = 0x87654321u;
+    thumb_stm_ldm_a9.regs[2] = 0xA5A55A5Au;
+    thumb_stm_ldm_a9.regs[3] = 0x5A5AA5A5u;
+    thumb_stm_ldm_a9.regs[4] = BUF_BASE + 0x400;
+    thumb_stm_ldm_a9.regs[6] = BUF_BASE;
+    thumb_stm_ldm_a9.regs[13] = STACK;
+    CHECK(run_both(mi, mj, thumb_stm_ldm_a9, true, 94008, true));
+    u32 block_results[4]{};
+    std::memcpy(block_results, mj.host(BUF_BASE), sizeof block_results);
+    CHECK(block_results[0] == 0x12345678u && block_results[1] == 0x87654321u &&
+          block_results[2] == 0xA5A55A5Au && block_results[3] == 0x5A5AA5A5u);
     Trial mem{};
     mem.thumb = true;
     mem.require_halt = true;
@@ -1853,6 +1986,35 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   unsetenv("DS_MIPS_NATIVE_MEM");
   jit::detach(mj.nds);
 }
+
+void native_user_bank_smoke(Cpu which) {
+  const bool a9 = which == Cpu::ARM9;
+  Machine mi(which), mj(which);
+  setenv("DS_MIPS_NATIVE_OP", "all", 1);
+  setenv("DS_MIPS_NATIVE_BRANCH", "1", 1);
+  setenv("DS_MIPS_NATIVE_MEM", "1", 1);
+  CHECK(jit::attach(mj.nds, a9, !a9));
+  Trial t{};
+  t.require_halt = true; t.budget = 1024;
+  t.regs[0] = BUF_BASE; t.regs[1] = 0x12345000u;
+  t.regs[2] = 0x87654321u; t.regs[13] = STACK; t.regs[14] = HALT_STUB;
+  t.code = {0xE5801000, 0xE5802004, 0xE321F0D2, 0xE8D03000, 0xE8C03000,
+            0xE321F0DF, 0xE580D008, 0xE580E00C};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91147 : 71147, true));
+  u32 values[4]{};
+  std::memcpy(values, mj.host(BUF_BASE), sizeof values);
+  CHECK(values[0] == 0x12345000u && values[1] == 0x87654321u &&
+        values[2] == 0x87654321u && values[3] == HALT_STUB);
+  t = Trial{};
+  t.require_halt = true; t.budget = 1024;
+  t.regs[1] = BUF_BASE; t.regs[6] = BUF_BASE + 0x100;
+  t.regs[13] = STACK;
+  t.code = {0xE321F0D2, 0xE8F10003, 0xE321F0DF, 0xE5860000, 0xE5861004};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91148 : 71148, true));
+  std::memcpy(values, mj.host(BUF_BASE + 0x100), 2 * sizeof(u32));
+  CHECK(values[0] == 0xa5a5a5a5u && values[1] == 0xa4a4a4a4u);
+  jit::detach(mj.nds);
+}
 #endif
 
 void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
@@ -1896,6 +2058,11 @@ void fuzz(Cpu which, bool thumb, u32 trials, u32 seed0) {
 
 int main(int argc, char** argv) {
 #if defined(__mips__)
+  if (argc > 1 && (std::strcmp(argv[1], "nativebank9") == 0 ||
+                   std::strcmp(argv[1], "nativebank7") == 0)) {
+    native_user_bank_smoke(argv[1][10] == '9' ? Cpu::ARM9 : Cpu::ARM7);
+    return 0;
+  }
   if (argc > 1 && (std::strcmp(argv[1], "thumbsmoke9") == 0 ||
                    std::strcmp(argv[1], "thumbsmoke7") == 0)) {
     native_thumb_smoke(argv[1][10] == '9' ? Cpu::ARM9 : Cpu::ARM7);

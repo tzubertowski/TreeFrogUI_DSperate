@@ -11,6 +11,7 @@
 #include "core/profile.h"
 #include "core/sched/scheduler.h"
 #include "core/cpu/cpu_cycles.h"
+#include "core/cpu/cpu_mem.h"
 #include "core/cpu/interp/interp.h"
 #include "core/cpu/interp/interp_internal.h"
 #include "core/nds.h"
@@ -518,6 +519,14 @@ extern "C" u32 jit_h_fallback(CpuContext* cpu, u32 instr, u32 key) {
 extern "C" u32 jit_h_mips_indirect_branch(CpuContext* cpu, u32 target,
                                             u32 interwork) {
   cpu->jump(target, interwork != 0);
+  return cpu->hot.regs[15];
+}
+
+extern "C" u32 jit_h_mips_indirect_load_branch(CpuContext* cpu, u32 target,
+                                                 u32 interwork, u32 addr) {
+  data_cost(*cpu, addr, 1, false, false);
+  cpu->jump(target, interwork != 0);
+  charge_CDI_after_jump(*cpu);
   return cpu->hot.regs[15];
 }
 
