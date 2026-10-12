@@ -132,8 +132,7 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   m.rn = (x >> 16) & 15;
   m.rd = (x >> 12) & 15;
   m.base_const = m.rn == 15;
-  // ARM7 register-base PC loads may read pipeline-dependent open bus values.
-  if ((m.rd == 15 && (!m.load || m.width != 4 || extra || (!arm9 && m.rn != 15))) ||
+  if ((m.rd == 15 && (!m.load || m.width != 4 || extra)) ||
       m.cond == 15 || (m.base_const && m.post) ||
       (m.writeback && m.load && m.rd == m.rn) ||
       (extra && ((!m.load && sh != 1) || sh == 0)))

@@ -968,6 +968,10 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     t.code.assign(pc_load_code[i], pc_load_code[i] + (i == 2 ? 4 : 3));
     CHECK(run_both(mi, mj, t, a9, (a9 ? 91022 : 71022) + i, true));
   }
+  t = Trial{};
+  t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[2] = HALT_STUB;
+  t.regs[13] = STACK; t.code = {0xE5812000, 0xE591F000}; // STR target; LDR pc,[r1]
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91024 : 71024, true));
   for (u32 ldm : {0xE8BD8000u, 0x08BD8000u}) {
     t = Trial{};
     t.require_halt = true; t.cpsr = 0x4000001fu; t.regs[13] = STACK;
