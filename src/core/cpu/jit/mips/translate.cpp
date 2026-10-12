@@ -187,7 +187,7 @@ static bool native_arm_block(u32 x) {
 }
 static bool native_thumb_block(u32 x, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
-  if (arm9) return false; // shortcut: enable ARM9 Thumb blocks after dual-core timing regression is fixed.
+  if (arm9) return false; // shortcut: ARM9 multi-register Thumb timing still regresses dual-core ROM runs.
   if ((h & 0xfe00u) == 0xb400u || (h & 0xfe00u) == 0xbc00u) {
     const bool pop = h & 0x0800u, extra = h & 0x0100u;
     const u32 n = __builtin_popcount(h & 0xffu) + static_cast<u32>(extra);

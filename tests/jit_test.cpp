@@ -1338,6 +1338,28 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, tagged, true, 94005, true));
     std::memcpy(&results[0], mj.host(BUF_BASE), sizeof(u32));
     CHECK(results[0] == 0x5Au); // tagged/code memory goes through SMC helpers
+    auto enable_dtcm = [](Machine& m) {
+      m.cpu.cp15_control |= 1u << 16;
+      m.cpu.cp15_dtcm = 0x027C0000u | (5u << 1); // 16 KB DTCM at 0x027C0000
+      m.nds.bus.update_tcm(m.cpu);
+    };
+    enable_dtcm(mi);
+    enable_dtcm(mj);
+    Trial dtcm_push_pop{};
+    dtcm_push_pop.thumb = true;
+    dtcm_push_pop.require_halt = true;
+    dtcm_push_pop.code = {0xB40F, 0x2000, 0x2100, 0x2200, 0x2300, 0xBC0F,
+                          0x6030, 0x6071, 0x60B2, 0x60F3};
+    dtcm_push_pop.regs[0] = 0x12345678u;
+    dtcm_push_pop.regs[1] = 0x87654321u;
+    dtcm_push_pop.regs[2] = 0xA5A55A5Au;
+    dtcm_push_pop.regs[3] = 0x5A5AA5A5u;
+    dtcm_push_pop.regs[6] = BUF_BASE;
+    dtcm_push_pop.regs[13] = 0x027C3F00u;
+    CHECK(run_both(mi, mj, dtcm_push_pop, true, 94007, true));
+    std::memcpy(results, mj.host(BUF_BASE), sizeof(u32) * 4);
+    CHECK(results[0] == 0x12345678u && results[1] == 0x87654321u &&
+          results[2] == 0xA5A55A5Au && results[3] == 0x5A5AA5A5u);
     Trial arm_mem{};
     arm_mem.require_halt = true;
     arm_mem.code = {0xE3A00080, 0xE5C10000, 0xE5D12000, 0xE5812004,
