@@ -545,7 +545,7 @@ static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &sk
   }
 }
 static void li(MipsEmitter &e, u32 r, u32 v) {
-  if (v < 0x8000u) {
+  if (v < 0x8000u || static_cast<u32>(static_cast<s32>(static_cast<ds::s16>(v))) == v) {
     e.addiu(r, 0, static_cast<s32>(v));
     return;
   }
