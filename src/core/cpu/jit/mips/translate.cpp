@@ -1450,20 +1450,17 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
         if (n.op == 5) {
           // C was calculated together with the two-stage addition above.
         } else {
-        e.sltu(T3, T2, T0);
-        e.andi(T3, T3, 1);
-        e.sll(T3, T3, 29);
+          e.sltu(T3, T2, T0);
+          e.sll(T3, T3, 29);
         }
       } else {
         if (n.op == 2 || n.op == 10) {
           e.sltu(T3, T0, T1);
-          e.nor(T3, T3, 0);
-          e.andi(T3, T3, 1);
+          e.xori(T3, T3, 1);
           e.sll(T3, T3, 29);
         } else if (n.op == 3) {
           e.sltu(T3, T1, T0);
-          e.nor(T3, T3, 0);
-          e.andi(T3, T3, 1);
+          e.xori(T3, T3, 1);
           e.sll(T3, T3, 29);
         }
       }
