@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <utility>
 #include <vector>
 
 using namespace ds;
@@ -972,6 +973,16 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[2] = HALT_STUB;
   t.regs[13] = STACK; t.code = {0xE5812000, 0xE591F000}; // STR target; LDR pc,[r1]
   CHECK(run_both(mi, mj, t, a9, a9 ? 91024 : 71024, true));
+  for (u32 op : {2u, 4u}) for (bool flags : {false, true})
+    for (u32 lhs : {0x7fffffffu, 0x80000000u})
+      for (const auto& imm : {std::pair<u32, u32>{0, 1}, {0, 0xff}, {7, 2}, {8, 0xff}}) {
+        t = Trial{};
+        t.require_halt = true; t.regs[1] = lhs; t.regs[13] = STACK;
+        t.code = {alu_imm(op, 0, 1, imm.first, imm.second, 14, flags)};
+        CHECK(run_both(mi, mj, t, a9, (a9 ? 92000 : 72000) + op * 64 +
+                       flags * 32 + (lhs >> 31) * 16 + imm.first * 512 + imm.second,
+                       true));
+      }
   for (u32 ldm : {0xE8BD8000u, 0x08BD8000u}) {
     t = Trial{};
     t.require_halt = true; t.cpsr = 0x4000001fu; t.regs[13] = STACK;

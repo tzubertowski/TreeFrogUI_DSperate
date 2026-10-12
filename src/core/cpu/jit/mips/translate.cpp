@@ -1008,6 +1008,10 @@ static void note_data_dep(ds::jit::Block &b, u32 addr) {
     b.dep_overflow = true;
 }
 static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
+  const u32 addend = n.op == 2 ? 0u - n.imm : n.imm;
+  const s32 addend16 = static_cast<ds::s16>(addend);
+  const bool arithmetic_imm16 = n.im && (n.op == 2 || n.op == 4) &&
+                                static_cast<u32>(addend16) == addend;
   if (n.op == 17) {
     getr(e, T0, n.rm, cache_mask);
     getr(e, T1, n.rn, cache_mask);
@@ -1055,8 +1059,9 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     }
     else getr(e, T0, n.rn, cache_mask);
   }
-  if (n.im)
-    li(e, T1, n.imm);
+  if (n.im) {
+    if (!arithmetic_imm16 || n.setflags) li(e, T1, n.imm);
+  }
   else {
     if (n.rm_pc) e.move(T1, R_GUEST_PC);
     else getr(e, T1, n.rm, cache_mask);
@@ -1171,7 +1176,8 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     break;
   case 2:
   case 10:
-    e.subu(T2, T0, T1);
+    if (n.op == 2 && arithmetic_imm16) e.addiu(T2, T0, addend16);
+    else e.subu(T2, T0, T1);
     break;
   case 3:
     e.subu(T2, T1, T0);
@@ -1180,7 +1186,9 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 11:
     // Some 74Kc/XBurst revisions mis-execute back-to-back generated ADDU.
     // Equivalent modulo-32-bit form keeps ADD native without that opcode.
-    if (n.setflags) {
+    if (n.op == 4 && arithmetic_imm16) {
+      e.addiu(T2, T0, addend16);
+    } else if (n.setflags) {
       e.nor(T3, T1, 0);
       e.subu(T2, T0, T3);
       e.addiu(T2, T2, -1);
