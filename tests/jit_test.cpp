@@ -1009,6 +1009,16 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     t.regs[0] = 0x12345678u; t.regs[13] = STACK;
     t.code = {0x11003281, 0xE2800001}; // SMLABBNE skipped with Z set.
     CHECK(run_both(mi, mj, t, true, 91220, true));
+  } else {
+    // ARM7 STM from WRAM into WRAM: both instruction and data waits are
+    // non-main, so the interpreter adds them rather than combining waits.
+    t = Trial{}; t.require_halt = true; t.code_base = 0x03800000;
+    t.regs[0] = 0x11223344; t.regs[1] = 0x55667788;
+    t.regs[2] = 0x99aabbcc; t.regs[3] = 0xddeeff00;
+    t.regs[12] = 0x12345678; t.regs[13] = 0x03804000;
+    t.code = {0xE92D500F}; // stmdb sp!, {r0-r3,r12,lr}
+    CHECK(run_both(mi, mj, t, false, 71200, true));
+    CHECK(std::memcmp(mi.host(0x03803fe8), mj.host(0x03803fe8), 24) == 0);
   }
   // Cover immediate/register-offset PC loads, including the ARM9 native path.
   static constexpr u32 pc_load[] = {0xE51FF004, 0xE51FF003, 0xE79FF10C};

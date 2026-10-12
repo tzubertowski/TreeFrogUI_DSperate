@@ -859,7 +859,9 @@ static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.addu(T0, T0, T1);
   } else {
     e.addiu(T1, 0, nc);
-    different_region_cost();
+    // When both accesses are outside main RAM, ARM7 cannot overlap the
+    // instruction fetch and data transfer waits.
+    e.addu(T0, T0, T1);
   }
   const size_t cross_done = e.b(); e.nop();
   e.patch_branch(data_main, e.size());
