@@ -991,6 +991,13 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
       t.regs[13] = STACK; t.code = {smlal[i].ins, 0xE2800001};
       CHECK(run_both(mi, mj, t, true, 91210 + i, true));
     }
+    static constexpr u32 mrc[] = {0xEE100F10, 0xEE190F11, 0x0E100F10};
+    for (u32 i = 0; i < std::size(mrc); ++i) {
+      t = Trial{}; t.require_halt = true; t.regs[13] = STACK;
+      t.cpsr = i == 2 ? 0 : 0x40000000u;
+      t.code = {mrc[i], 0xE2800001};
+      CHECK(run_both(mi, mj, t, true, 91230 + i, true));
+    }
     t = Trial{}; t.require_halt = true; t.cpsr = 0x40000000u;
     t.regs[0] = 0x12345678u; t.regs[13] = STACK;
     t.code = {0x11003281, 0xE2800001}; // SMLABBNE skipped with Z set.

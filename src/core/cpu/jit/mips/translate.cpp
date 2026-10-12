@@ -1095,6 +1095,31 @@ static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask) {
   e.nop();
   e.sw(s, OR + 4 * r, R_CTX);
 }
+static void emit_arm_mrc(MipsEmitter &e, u32 instr, u32 cache_mask) {
+  const u32 crn = (instr >> 16) & 15u, rd = (instr >> 12) & 15u;
+  const u32 crm = instr & 15u, opc2 = (instr >> 5) & 7u;
+  const u32 key = (crn << 8) | (crm << 4) | opc2;
+  auto field = [&](size_t off) { e.lw(T1, off, R_CTX); e.nop(); };
+  switch (key) {
+  case 0x000: li(e, T1, 0x41059461); break;
+  case 0x001: li(e, T1, 0x0f0d2112); break;
+  case 0x002: li(e, T1, 0x00140180); break;
+  case 0x100: field(offsetof(CpuContext, cp15_control)); break;
+  case 0x200: field(offsetof(CpuContext, pu_data_cacheable)); break;
+  case 0x201: field(offsetof(CpuContext, pu_code_cacheable)); break;
+  case 0x300: field(offsetof(CpuContext, pu_data_bufferable)); break;
+  case 0x502: field(offsetof(CpuContext, pu_data_perm)); break;
+  case 0x503: field(offsetof(CpuContext, pu_code_perm)); break;
+  case 0x910: field(offsetof(CpuContext, cp15_dtcm)); break;
+  case 0x911: field(offsetof(CpuContext, cp15_itcm)); break;
+  default:
+    if ((key & 0xf0fu) == 0x600u || (key & 0xf0fu) == 0x601u)
+      field(offsetof(CpuContext, pu_region) + crm * sizeof(u32));
+    else e.move(T1, 0);
+    break;
+  }
+  putr(e, rd, T1, cache_mask);
+}
 static void spill_cached(MipsEmitter &e, u32 cache_mask) {
   for (u32 r = 0; r < 15; ++r)
     if (cache_mask & (1u << r))
@@ -1549,6 +1574,11 @@ static bool native_ignored_mcr(u32 x, bool arm9) {
     return false;
   return ds::jit::shape::mcr_is_nop(x, true) || ((x >> 16) & 15) == 0;
 }
+static bool native_mrc(u32 x, bool arm9) {
+  return arm9 && (x >> 28) != 15 && ds::arm::decode_arm(x) == AOp::Mrc &&
+         ((x >> 8) & 15u) == 15u && ((x >> 12) & 15u) != 15u &&
+         native_op_enabled(24, arm9);
+}
 static bool native_mrs_cpsr(u32 x) {
   return ds::arm::decode_arm(x) == AOp::Mrs && !(x & (1u << 22)) &&
          ((x >> 12) & 15u) != 15u && (x >> 28) != 15u;
@@ -1730,6 +1760,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (n.reg_shift) score_reg(n.shift_reg);
       if (n.op == 17 && n.accumulate) score_reg(n.rd);
       if (n.op == 17 || (n.op == 16 && n.accumulate)) score_reg(n.rdlo);
+    }
+    if (use_native && (!native_limit || candidates < native_limit) && native_mrc(x, arm9)) {
+      ++candidates;
+      score_reg((x >> 12) & 15u);
     }
     if (use_native && !thumb &&
         (!native_limit || candidates < native_limit) &&
@@ -2140,6 +2174,23 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) && native_mrc(is[q], arm9)) {
+      note_code_dep(b, pc + 8);
+      emit_trace(e, is[q], pc, false, cache_mask);
+      emit_timing(e, *jc.ctx, pc, false);
+      std::vector<size_t> skip;
+      emit_skip_if_false(e, is[q] >> 28, skip);
+      e.addiu(R_BUDGET, R_BUDGET, -3);
+      emit_arm_mrc(e, is[q], cache_mask);
+      for (size_t p : skip) e.patch_branch(p, e.size());
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native && !thumb &&
         (!native_limit || native_count < native_limit) &&
         (native_mrs_cpsr(is[q]) || native_mrs_spsr(is[q]))) {
       note_code_dep(b, pc + 8);
@@ -2437,7 +2488,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
           (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
            native_mrs_spsr(is[i]) ||
-           native_msr_flags(is[i]) || native_msr_control(is[i]) ||
+           native_mrc(is[i], arm9) || native_msr_flags(is[i]) || native_msr_control(is[i]) ||
            native_msr_spsr(is[i])))
         return true;
       if (use_native_branch && (!native_limit || native_count < native_limit)) {
