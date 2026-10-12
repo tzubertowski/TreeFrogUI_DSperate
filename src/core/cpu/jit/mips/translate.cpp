@@ -384,6 +384,18 @@ static bool native_thumb(u32 x, N &n, bool arm9) {
 }
 static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
   const AOp decoded = !thumb ? ds::arm::decode_arm(x) : AOp::Undefined;
+  if (!thumb && arm9 && (decoded == AOp::SmlaXY || decoded == AOp::SmulXY ||
+                         decoded == AOp::SmlawY || decoded == AOp::SmulwY)) {
+    const bool acc = decoded == AOp::SmlaXY || decoded == AOp::SmlawY;
+    n.op = decoded == AOp::SmulXY ? 19 : decoded == AOp::SmlaXY ? 20 :
+           decoded == AOp::SmulwY ? 21 : 22;
+    n.rd = (x >> 16) & 15u; n.rn = (x >> 12) & 15u;
+    n.rm = x & 15u; n.shift_reg = (x >> 8) & 15u;
+    n.shift = (x >> 5) & 1u; n.shift_type = (x >> 6) & 1u;
+    n.cond = x >> 28;
+    return n.cond != 15 && n.rd != 15 && n.rm != 15 && n.shift_reg != 15 &&
+           (!acc || n.rn != 15) && native_op_enabled(n.op, arm9);
+  }
   if (!thumb && arm9 && decoded == AOp::Clz) {
     const u32 rd = (x >> 12) & 15u, rm = x & 15u;
     if (rd == 15 || rm == 15) return false;
@@ -430,6 +442,39 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
   if (!native_thumb(x, n, arm9)) return false;
   n.mul_arm7 = !arm9 && n.op == 16;
   return true;
+}
+static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask);
+static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask);
+static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
+  getr(e, T0, n.rm, cache_mask);
+  getr(e, T1, n.shift_reg, cache_mask);
+  if (n.op == 19 || n.op == 20) {
+    if (n.shift) e.srl(T0, T0, 16); else e.andi(T0, T0, 0xffff);
+    if (n.shift_type) e.srl(T1, T1, 16); else e.andi(T1, T1, 0xffff);
+    e.sll(T0, T0, 16); e.sra(T0, T0, 16);
+    e.sll(T1, T1, 16); e.sra(T1, T1, 16);
+  } else {
+    if (n.shift_type) e.srl(T1, T1, 16); else e.andi(T1, T1, 0xffff);
+    e.sll(T1, T1, 16); e.sra(T1, T1, 16);
+  }
+  e.mult(T0, T1); e.nop(); e.nop(); e.mflo(T2);
+  if (n.op == 21 || n.op == 22) {
+    e.mfhi(T3); e.srl(T0, T2, 16); e.sll(T3, T3, 16); e.or_(T2, T3, T0);
+  }
+  if (n.op == 20 || n.op == 22) {
+    getr(e, T1, n.rn, cache_mask);
+    e.addu(T0, T2, T1);
+    e.xor_(T3, T2, T1);
+    const size_t no_overflow = e.bltz(T3); e.nop();
+    e.xor_(T3, T2, T0); e.srl(T3, T3, 31);
+    const size_t no_q = e.beq(T3, 0); e.nop();
+    e.lw(T3, ds::jit::OFF_CPSR, R_CTX); e.nop();
+    e.addiu(T1, 0, 0x0800); e.sll(T1, T1, 16); e.or_(T3, T3, T1);
+    e.sw(T3, ds::jit::OFF_CPSR, R_CTX);
+    e.patch_branch(no_overflow, e.size());
+    e.patch_branch(no_q, e.size());
+  } else e.move(T0, T2);
+  putr(e, n.rd, T0, cache_mask);
 }
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
   if (cond == 14) return;
@@ -2261,6 +2306,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         getr(e, T1, n.rm, cache_mask);
         e.clz(T2, T1);
         putr(e, n.rd, T2, cache_mask);
+        for (size_t p : skip) e.patch_branch(p, e.size());
+        e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+        ex.push_back(e.blez(R_BUDGET)); e.nop();
+        ++native_count;
+        rt().stats.instrs_translated++;
+        ++q;
+        continue;
+      }
+      if (n.op >= 19 && n.op <= 22) {
+        emit_timing(e, *jc.ctx, key_pc(ks[q]), false);
+        std::vector<size_t> skip;
+        emit_skip_if_false(e, n.cond, skip);
+        emit_dsp_multiply(e, n, cache_mask);
         for (size_t p : skip) e.patch_branch(p, e.size());
         e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
         ex.push_back(e.blez(R_BUDGET)); e.nop();

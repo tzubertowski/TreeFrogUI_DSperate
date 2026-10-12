@@ -957,6 +957,30 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
+  if (a9) {
+    struct DspCase { u32 ins, rm, rs, rn; };
+    static constexpr DspCase dsp[] = {
+      {0xE1600281, 0x7FFF8000u, 0x00028001u, 0}, // SMULBB
+      {0xE16002E1, 0x7FFF8000u, 0x00028001u, 0}, // SMULTT
+      {0xE16002C1, 0x7FFF8000u, 0x00028001u, 0}, // SMULBT
+      {0xE1003281, 0x00001234u, 0x00005678u, 0x100}, // SMLABB
+      {0xE1003281, 0x7FFF7FFFu, 0x7FFF7FFFu, 0x7FFFFFFFu}, // SMLABB sets sticky Q
+      {0xE1203281, 0x12345678u, 0x00007FFFu, 0x100}, // SMLAWB
+      {0xE12032C1, 0x80000000u, 0x8000FFFFu, 0x7FFFFFFFu}, // SMLAWT, Q overflow
+      {0xE12002A1, 0x12345678u, 0x00007FFFu, 0}, // SMULWB
+      {0xE12002E1, 0x80000000u, 0x8000FFFFu, 0}, // SMULWT
+    };
+    for (u32 i = 0; i < std::size(dsp); ++i) {
+      t = Trial{}; t.require_halt = true;
+      t.regs[1] = dsp[i].rm; t.regs[2] = dsp[i].rs; t.regs[3] = dsp[i].rn;
+      t.regs[13] = STACK; t.code = {dsp[i].ins, 0xE2800001};
+      CHECK(run_both(mi, mj, t, true, 91200 + i, true));
+    }
+    t = Trial{}; t.require_halt = true; t.cpsr = 0x40000000u;
+    t.regs[0] = 0x12345678u; t.regs[13] = STACK;
+    t.code = {0x11003281, 0xE2800001}; // SMLABBNE skipped with Z set.
+    CHECK(run_both(mi, mj, t, true, 91220, true));
+  }
   // Cover immediate/register-offset PC loads, including the ARM9 native path.
   static constexpr u32 pc_load[] = {0xE51FF004, 0xE51FF003, 0xE79FF10C};
   static constexpr u32 pc_literal[] = {HALT_STUB, (HALT_STUB << 8) | (HALT_STUB >> 24), HALT_STUB};
