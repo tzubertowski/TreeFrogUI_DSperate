@@ -35,6 +35,7 @@ public:
   void nor(u32 d,u32 s,u32 t){w(0x00000027u|(s<<21)|(t<<16)|(d<<11));}
   void multu(u32 s,u32 t){w(0x00000019u|(s<<21)|(t<<16));}
   void mult(u32 s,u32 t){w(0x00000018u|(s<<21)|(t<<16));}
+  void mul(u32 d,u32 s,u32 t){w(0x70000002u|(s<<21)|(t<<16)|(d<<11));}
   void mflo(u32 d){w(0x00000012u|(d<<11));}
   void mfhi(u32 d){w(0x00000010u|(d<<11));}
   void clz(u32 d,u32 s){w(0x70000020u|(s<<21)|(d<<11));}

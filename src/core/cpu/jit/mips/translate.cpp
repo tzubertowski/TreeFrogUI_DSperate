@@ -467,10 +467,13 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
     if (n.shift_type) e.srl(T1, T1, 16); else e.andi(T1, T1, 0xffff);
     e.sll(T1, T1, 16); e.sra(T1, T1, 16);
   }
-  e.mult(T0, T1); e.nop(); e.nop(); e.mflo(T2);
-  if (n.op == 21 || n.op == 22) {
-    e.mfhi(T3); e.srl(T0, T2, 16); e.sll(T3, T3, 16); e.or_(T2, T3, T0);
-  } else if (n.op == 23) e.mfhi(T3);
+  if (n.op == 19 || n.op == 20) e.mul(T2, T0, T1);
+  else {
+    e.mult(T0, T1); e.nop(); e.nop(); e.mflo(T2);
+    if (n.op == 21 || n.op == 22) {
+      e.mfhi(T3); e.srl(T0, T2, 16); e.sll(T3, T3, 16); e.or_(T2, T3, T0);
+    } else if (n.op == 23) e.mfhi(T3);
+  }
   if (n.op == 20 || n.op == 22) {
     getr(e, T1, n.rn, cache_mask);
     e.addu(T0, T2, T1);
@@ -1201,7 +1204,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   if (n.op == 16) {
     getr(e, T0, n.rm, cache_mask);
     getr(e, T1, n.rn, cache_mask);
-    e.multu(T0, T1); e.nop(); e.nop(); e.mflo(T2);
+    e.mul(T2, T0, T1);
     if (n.accumulate) { getr(e, T0, n.rdlo, cache_mask); e.addu(T2, T2, T0); }
     if (n.setflags) {
       e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
@@ -1233,22 +1236,13 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       if (n.shift_type == 0 || n.shift_type == 1) {
         if (n.shift_type == 0) e.sllv(T1, T1, T3);
         else e.srlv(T1, T1, T3);
-        const size_t in_range = e.beq(T3, 0); e.nop();
-        // A zero low-five-bit count is either zero or a multiple of 32;
-        // only the latter saturates LSL/LSR to zero.
-        li(e, T2, 32);
-        e.sltu(T2, T3, T2);
+        e.sltiu(T2, T3, 32);
         const size_t small = e.bnez(T2); e.nop();
         e.move(T1, 0);
-        const size_t done = e.b(); e.nop();
-        e.patch_branch(in_range, e.size());
-        // Counts 1..31 already produced their result.  For count 32, force 0.
         e.patch_branch(small, e.size());
-        e.patch_branch(done, e.size());
       } else if (n.shift_type == 2) {
         e.srav(T1, T1, T3);
-        li(e, T2, 32);
-        e.sltu(T2, T3, T2);
+        e.sltiu(T2, T3, 32);
         const size_t small = e.bnez(T2); e.nop();
         e.sra(T1, T1, 31);
         e.patch_branch(small, e.size());
