@@ -1090,7 +1090,6 @@ static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask) {
     e.move(CACHE_FIRST + slot, s);
     return;
   }
-  e.nop();
   e.sw(s, OR + 4 * r, R_CTX);
 }
 static void emit_arm_mrc(MipsEmitter &e, u32 instr, u32 cache_mask) {
