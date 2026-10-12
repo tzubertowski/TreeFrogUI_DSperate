@@ -957,6 +957,22 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   setenv("DS_MIPS_NATIVE_MEM", "1", 1);
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
+  // The scheduler's clock advances inside native execution. Verify that a
+  // timer MMIO load observes its value before charging this instruction.
+  t.require_halt = true; t.regs[0] = 0x04000100;
+  t.code = {0xE1D020B0}; // ldrh r2, [r0]
+  jit::flush(mj.cpu);
+  load_trial(mi, t, a9);
+  load_trial(mj, t, a9);
+  for (Machine* m : {&mi, &mj}) {
+    m->nds.bus.write16(which, 0x04000100, 0x1000);
+    m->nds.bus.write16(which, 0x04000102, 0x0080);
+    if (a9) m->nds.io.cpu_io[0].timers[0].start_time--;
+    m->nds.cpu(a9 ? Cpu::ARM7 : Cpu::ARM9).halted = true;
+    m->nds.sched.run_until(m->nds.sched.now() + 200);
+  }
+  CHECK(compare(mi, mj, t, a9 ? 91201 : 71201, true));
+  CHECK(mj.cpu.hot.regs[2] == 0x1000);
   if (a9) {
     t = Trial{}; t.require_halt = true; t.regs[14] = HALT_STUB;
     t.code = {0xE1A0000E, 0xE1A0000E, 0xE1A0000E, 0xE1A0000E,

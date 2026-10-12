@@ -614,6 +614,8 @@ static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask);
 static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask);
 static void spill_cached(MipsEmitter &e, u32 cache_mask);
 static void reload_cached(MipsEmitter &e, u32 cache_mask);
+static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
+                        bool internal = false);
 static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                            bool thumb, const ThumbMem &m, u32 cache_mask,
                            std::vector<size_t> &ex, int slot7) {
@@ -675,6 +677,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.sll(T2, T1, 2);                       // remove both tag bits
   const size_t unmapped = e.beq(T2, 0); e.nop();
   e.addu(T2, T2, T0);                     // mapped host address
+  if (!m.after_jump) emit_timing(e, c, pc, thumb);
   if (m.load) {
     if (m.width == 1) { e.lbu(T1, 0, T2); }
     else if (m.width == 2 && m.sign && c.which == ds::Cpu::ARM7) {
@@ -781,6 +784,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.lw(R_BUDGET, OB, R_CTX);
   e.lw(R_GUEST_PC, OR + 60, R_CTX);
   reload_cached(e, cache_mask);
+  if (!m.after_jump) emit_timing(e, c, pc, thumb);
   loaded();
   writeback();
   if (pc_dest) branch_pc();
@@ -802,8 +806,6 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   }
   // Dynamic timing tables mean a timing update can affect any page used here.
 }
-static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
-                        bool internal = false);
 static void emit_scaled_wait(MipsEmitter &e, u32 count) {
   const u32 scale = count - 1;
   if (!scale) { e.move(T2, 0); return; }
@@ -2344,15 +2346,13 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       note_code_dep(b, pc + (thumb ? 4 : 8));
       b.dep_overflow = true; // the access-time row can vary with the guest address
       emit_trace(e, is[q], pc, thumb, cache_mask);
-      const bool post_jump_load = mem.load && mem.rd == 15 && mem.after_jump;
-      if (!post_jump_load) emit_timing(e, *jc.ctx, pc, thumb);
       std::vector<size_t> pred_skip;
       if (!thumb) emit_skip_if_false(e, mem.cond, pred_skip);
       emit_thumb_mem(e, *jc.ctx, pc, thumb, mem, cache_mask, ex, slot7);
       if (!thumb && !pred_skip.empty()) {
         const size_t executed = e.b(); e.nop();
         for (size_t p : pred_skip) e.patch_branch(p, e.size());
-        if (post_jump_load) emit_timing(e, *jc.ctx, pc, thumb);
+        emit_timing(e, *jc.ctx, pc, thumb);
         e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
         ex.push_back(e.blez(R_BUDGET)); e.nop();
         e.patch_branch(executed, e.size());
