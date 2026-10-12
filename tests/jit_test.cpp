@@ -1020,6 +1020,13 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
     CHECK(run_both(mi, mj, t, false, 71200, true));
     CHECK(std::memcmp(mi.host(0x03803fe8), mj.host(0x03803fe8), 24) == 0);
   }
+  if (a9) {
+    t = Trial{}; t.require_halt = true; t.code_base = 0x020056b0;
+    t.code = {0xE59F0014, 0xE1A00000, 0xE1A00000, 0xE1A00000,
+              0xE1A00000, 0xE1A00000, 0xEA000000, 0xDEADBEEF};
+    CHECK(run_both(mi, mj, t, true, 91021, true));
+    CHECK(mj.cpu.hot.regs[0] == 0xDEADBEEF);
+  }
   // Cover immediate/register-offset PC loads, including the ARM9 native path.
   static constexpr u32 pc_load[] = {0xE51FF004, 0xE51FF003, 0xE79FF10C};
   static constexpr u32 pc_literal[] = {HALT_STUB, (HALT_STUB << 8) | (HALT_STUB >> 24), HALT_STUB};
