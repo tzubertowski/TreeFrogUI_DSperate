@@ -31,6 +31,7 @@ using ds::s32;
 using ds::u32;
 using ds::arm::AOp;
 using ds::jit::MipsEmitter;
+// Target is MIPS32r2: loads interlock, so old-MIPS load-delay NOPs waste slots.
 constexpr u32 R_CTX = 16, R_SP = 29, R_FP = 30, R_RA = 31, R_BUDGET = 23;
 constexpr u32 T0 = 8, T1 = 9, T2 = 10, T3 = 11, R_GUEST_PC = 24;
 constexpr u32 OR = ds::jit::OFF_REGS, OB = ds::jit::OFF_BUDGET;
@@ -477,7 +478,7 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
     const size_t no_overflow = e.bltz(T3); e.nop();
     e.xor_(T3, T2, T0); e.srl(T3, T3, 31);
     const size_t no_q = e.beq(T3, 0); e.nop();
-    e.lw(T3, ds::jit::OFF_CPSR, R_CTX); e.nop();
+    e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
     e.addiu(T1, 0, 0x0800); e.sll(T1, T1, 16); e.or_(T3, T3, T1);
     e.sw(T3, ds::jit::OFF_CPSR, R_CTX);
     e.patch_branch(no_overflow, e.size());
@@ -498,7 +499,6 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
   if (cond == 14) return;
   e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
-  e.nop();
   auto flag = [&](u32 bit) { e.srl(T1, T0, bit); e.andi(T1, T1, 1); };
   auto fail_beq = [&](u32 a, u32 b) { skip.push_back(e.beq(a, b)); e.nop(); };
   auto fail_bne = [&](u32 a, u32 b) { skip.push_back(e.bne(a, b)); e.nop(); };
@@ -560,7 +560,6 @@ static void emit_arm9_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
   const u32 nc = arm9_code_cost(c, pc, thumb);
   const u32 slot = (store ? 4 : 0) + (width == 4 ? 2 : 1);
   e.lw(T2, offsetof(CpuContext, timing9), R_CTX);
-  e.nop();
   if (width == 4) {
     e.srl(T3, R_FP, 2);
     e.sll(T3, T3, 2);
@@ -574,7 +573,6 @@ static void emit_arm9_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.sll(T3, T3, 3);
   e.addu(T2, T2, T3);
   e.lbu(T2, slot, T2);
-  e.nop();
   if (nc <= 6) {
     if (nc) {
       e.addiu(T1, T2, -static_cast<s32>(nc));
@@ -606,7 +604,6 @@ static void emit_data_extra(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.sll(T3, T3, 5);
   e.addu(T2, T2, T3);
   e.lbu(T2, slot7, T2);
-  e.nop();
   if (seq) e.addiu(T2, T2, -static_cast<s32>(seq));
   e.subu(R_BUDGET, R_BUDGET, T2);
 }
@@ -666,7 +663,6 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.load_ptr(T2, c.page_table.raw());
   e.addu(T2, T2, T1);
   e.lw(T1, 0, T2);
-  e.nop();
   if (m.load) {
     e.srl(T2, T1, 30); e.andi(T2, T2, 1); // SPECIAL pages need helper
   } else {
@@ -677,17 +673,17 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   const size_t unmapped = e.beq(T2, 0); e.nop();
   e.addu(T2, T2, T0);                     // mapped host address
   if (m.load) {
-    if (m.width == 1) { e.lbu(T1, 0, T2); e.nop(); }
+    if (m.width == 1) { e.lbu(T1, 0, T2); }
     else if (m.width == 2 && m.sign && c.which == ds::Cpu::ARM7) {
       e.andi(T3, R_FP, 1);
       const size_t even = e.beq(T3, 0); e.nop();
-      e.lbu(T1, 0, T2); e.nop();
+      e.lbu(T1, 0, T2);
       const size_t done = e.b(); e.nop();
       e.patch_branch(even, e.size());
-      e.lhu(T1, 0, T2); e.nop();
+      e.lhu(T1, 0, T2);
       e.patch_branch(done, e.size());
-    } else if (m.width == 2) { e.lhu(T1, 0, T2); e.nop(); }
-    else { e.lw(T1, 0, T2); e.nop(); }
+    } else if (m.width == 2) { e.lhu(T1, 0, T2); }
+    else { e.lw(T1, 0, T2); }
   } else {
     getr(e, T3, m.rd, cache_mask);
     if (m.width == 1) e.sb(T3, 0, T2);
@@ -725,7 +721,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   };
   auto writeback = [&] {
     if (!m.writeback) return;
-    e.lw(T3, 52, R_SP); e.nop();
+    e.lw(T3, 52, R_SP);
     putr(e, m.rn, T3, cache_mask);
   };
   auto branch_pc = [&] {
@@ -737,7 +733,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     } else {
       e.sw(T1, 60, R_SP);
       emit_data_extra(e, c, pc, thumb, m.width, false, slot7);
-      e.lw(T1, 60, R_SP); e.nop();
+      e.lw(T1, 60, R_SP);
       e.move(4, R_CTX); e.move(5, T1);
       e.addiu(6, 0, c.which == ds::Cpu::ARM9 ? 1 : 0);
       e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
@@ -746,7 +742,7 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
     e.jalr(R_RA, 25); e.nop();
     e.move(R_GUEST_PC, 2);
-    e.lw(R_BUDGET, OB, R_CTX); e.nop();
+    e.lw(R_BUDGET, OB, R_CTX);
     reload_cached(e, cache_mask);
     ex.push_back(e.b()); e.nop();
   };
@@ -779,8 +775,8 @@ static void emit_thumb_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
   if (m.load) e.move(T1, 2);
-  e.lw(R_BUDGET, OB, R_CTX); e.nop();
-  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX);
+  e.lw(R_GUEST_PC, OR + 60, R_CTX);
   reload_cached(e, cache_mask);
   loaded();
   writeback();
@@ -808,10 +804,10 @@ static void emit_timing(MipsEmitter &e, const CpuContext &c, u32 pc, bool thumb,
 static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
                                  u32 start, bool load, u32 n, bool thumb) {
   // The earlier 2 KB boundary guard keeps every beat in this timing region.
-  e.lw(T3, offsetof(CpuContext, timing7), R_CTX); e.nop();
+  e.lw(T3, offsetof(CpuContext, timing7), R_CTX);
   e.srl(T1, start, 15); e.sll(T1, T1, 2); e.addu(T1, T3, T1);
-  e.lbu(T0, 2, T1); e.nop();
-  e.lbu(T2, 3, T1); e.nop();
+  e.lbu(T0, 2, T1);
+  e.lbu(T2, 3, T1);
   if (n == 2) e.addu(T0, T0, T2);
   else {
     li(e, T3, n - 1);
@@ -874,7 +870,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   emit_skip_if_false(e, instr >> 28, not_executed);
 
   if (user_bank) {
-    e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+    e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
     e.andi(T0, T0, 0x1f);
     li(e, T1, 0x088c0000u); // IRQ/SVC/ABT/UND have a distinct user r13/r14 bank.
     e.srlv(T1, T1, T0); e.andi(T1, T1, 1);
@@ -890,7 +886,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   slow.push_back(e.bnez(T1)); e.nop();
   e.srl(T1, R_FP, 11); e.sll(T1, T1, 2);
   e.load_ptr(T3, c.page_table.raw()); e.addu(T3, T3, T1);
-  e.lw(T1, 0, T3); e.nop();
+  e.lw(T1, 0, T3);
   e.sll(T2, T1, 2);
   slow.push_back(e.beq(T2, 0)); e.nop();
   e.srl(T3, T1, 30);
@@ -907,31 +903,31 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   for (u32 r = 0, off = 0; r < 16; ++r) {
     if (!(list & (1u << r))) continue;
     if (load) {
-      e.lw(T1, off, T2); e.nop();
+      e.lw(T1, off, T2);
       if (r == 15) e.sw(T1, 60, R_SP);
       else if (user_bank && r == 13) e.sw(T1, ds::jit::OFF_BANK_R13, R_CTX);
       else if (user_bank && r == 14) e.sw(T1, ds::jit::OFF_BANK_R14, R_CTX);
       else putr(e, r, T1, cache_mask);
     } else {
-      if (user_bank && r == 13) { e.lw(T1, ds::jit::OFF_BANK_R13, R_CTX); e.nop(); }
-      else if (user_bank && r == 14) { e.lw(T1, ds::jit::OFF_BANK_R14, R_CTX); e.nop(); }
+      if (user_bank && r == 13) { e.lw(T1, ds::jit::OFF_BANK_R13, R_CTX); }
+      else if (user_bank && r == 14) { e.lw(T1, ds::jit::OFF_BANK_R14, R_CTX); }
       else getr(e, T1, r, cache_mask);
       e.sw(T1, off, T2);
     }
     off += 4;
   }
   if (writeback && !(load && (list & (1u << rn)))) {
-    e.lw(T3, 52, R_SP); e.nop();
+    e.lw(T3, 52, R_SP);
     if (load && user_bank && rn == 13) e.sw(T3, ds::jit::OFF_BANK_R13, R_CTX);
     else if (load && user_bank && rn == 14) e.sw(T3, ds::jit::OFF_BANK_R14, R_CTX);
     else putr(e, rn, T3, cache_mask);
   }
   if (c.which == ds::Cpu::ARM9) {
     // The boundary guard shares one timing row; sum N + (n-1)S, then CD/CDI.
-    e.lw(T3, offsetof(CpuContext, timing9), R_CTX); e.nop();
+    e.lw(T3, offsetof(CpuContext, timing9), R_CTX);
     e.srl(T1, R_FP, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
-    e.lbu(T0, (load ? 0 : 4) + 2, T1); e.nop();
-    e.lbu(T2, (load ? 0 : 4) + 3, T1); e.nop();
+    e.lbu(T0, (load ? 0 : 4) + 2, T1);
+    e.lbu(T2, (load ? 0 : 4) + 3, T1);
     if (n == 2) e.addu(T0, T0, T2);
     else {
       li(e, T3, n - 1);
@@ -956,7 +952,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.subu(R_BUDGET, R_BUDGET, T0);
   } else emit_arm7_block_cost(e, c, pc, R_FP, load, n, thumb);
   if (load && (list & (1u << 15))) {
-    e.lw(T1, 60, R_SP); e.nop();
+    e.lw(T1, 60, R_SP);
     e.move(4, R_CTX); e.move(5, T1);
     e.addiu(6, 0, c.which == ds::Cpu::ARM9 ? 1 : 0);
     e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
@@ -964,7 +960,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
     e.jalr(R_RA, 25); e.nop();
     e.move(R_GUEST_PC, 2);
-    e.lw(R_BUDGET, OB, R_CTX); e.nop();
+    e.lw(R_BUDGET, OB, R_CTX);
     reload_cached(e, cache_mask);
     ex.push_back(e.b()); e.nop();
   } else {
@@ -981,8 +977,8 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   spill_cached(e, cache_mask);
   e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
-  e.lw(R_BUDGET, OB, R_CTX); e.nop();
-  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX);
+  e.lw(R_GUEST_PC, OR + 60, R_CTX);
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
 
@@ -1021,7 +1017,7 @@ static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
                    ((fields & 8) ? 0xff000000u : 0);
   std::vector<size_t> not_executed, changed_mode;
   emit_skip_if_false(e, instr >> 28, not_executed);
-  e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+  e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
   if (ds::arm::decode_arm(instr) == AOp::MsrImm) li(e, T1, ai(instr));
   else getr(e, T1, instr & 15u, cache_mask);
   e.andi(T3, T0, 31); e.addiu(T2, 0, 0x10);
@@ -1056,8 +1052,8 @@ static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
   spill_cached(e, cache_mask);
   e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
-  e.lw(R_BUDGET, OB, R_CTX); e.nop();
-  e.lw(R_GUEST_PC, OR + 60, R_CTX); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX);
+  e.lw(R_GUEST_PC, OR + 60, R_CTX);
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
 
@@ -1084,7 +1080,6 @@ static void getr(MipsEmitter &e, u32 d, u32 r, u32 cache_mask) {
     return;
   }
   e.lw(d, OR + 4 * r, R_CTX);
-  e.nop();
 }
 static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask) {
   if (r < 15 && (cache_mask & (1u << r))) {
@@ -1099,7 +1094,7 @@ static void emit_arm_mrc(MipsEmitter &e, u32 instr, u32 cache_mask) {
   const u32 crn = (instr >> 16) & 15u, rd = (instr >> 12) & 15u;
   const u32 crm = instr & 15u, opc2 = (instr >> 5) & 7u;
   const u32 key = (crn << 8) | (crm << 4) | opc2;
-  auto field = [&](size_t off) { e.lw(T1, off, R_CTX); e.nop(); };
+  auto field = [&](size_t off) { e.lw(T1, off, R_CTX); };
   switch (key) {
   case 0x000: li(e, T1, 0x41059461); break;
   case 0x001: li(e, T1, 0x0f0d2112); break;
@@ -1129,7 +1124,6 @@ static void reload_cached(MipsEmitter &e, u32 cache_mask) {
   for (u32 r = 0; r < 15; ++r) {
     if (!(cache_mask & (1u << r))) continue;
     e.lw(CACHE_FIRST + __builtin_popcount(cache_mask & ((1u << r) - 1)), OR + 4 * r, R_CTX);
-    e.nop();
   }
 }
 static void emit_trace(MipsEmitter &e, u32 instr, u32 pc, bool thumb,
@@ -1141,7 +1135,7 @@ static void emit_trace(MipsEmitter &e, u32 instr, u32 pc, bool thumb,
   e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, thumb));
   e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_trace));
   e.jalr(R_RA, 25); e.nop();
-  e.lw(R_GUEST_PC, 60, R_SP); e.nop();
+  e.lw(R_GUEST_PC, 60, R_SP);
   reload_cached(e, cache_mask);
 }
 static void note_code_dep(ds::jit::Block &b, u32 addr) {
@@ -1193,7 +1187,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       e.addu(T3, T3, T0);
     }
     if (n.setflags) {
-      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
       li(e, T1, n.mul_arm7 ? 0x1fffffffu : 0x3fffffffu); e.and_(T0, T0, T1);
       e.srl(T1, T3, 31); e.sll(T1, T1, 31); e.or_(T0, T0, T1);
       e.or_(T1, T3, T2);
@@ -1210,7 +1204,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.multu(T0, T1); e.nop(); e.nop(); e.mflo(T2);
     if (n.accumulate) { getr(e, T0, n.rdlo, cache_mask); e.addu(T2, T2, T0); }
     if (n.setflags) {
-      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
       li(e, T1, n.mul_arm7 ? 0x1fffffffu : 0x3fffffffu); e.and_(T0, T0, T1);
       e.srl(T1, T2, 31); e.sll(T1, T1, 31); e.or_(T0, T0, T1);
       e.sltiu(T1, T2, 1); e.sll(T1, T1, 30); e.or_(T0, T0, T1);
@@ -1263,7 +1257,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       }
       if (n.carry_dynamic) {
         e.move(14, T3);
-        e.lw(T3, ds::jit::OFF_CPSR, R_CTX); e.nop();
+        e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
         e.srl(T3, T3, 29); e.andi(T3, T3, 1);
         const size_t no_shift = e.beq(14, 0); e.nop();
         std::vector<size_t> carry_done;
@@ -1328,7 +1322,7 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       } else if (n.shift_type == 2) {
         e.sra(T1, T1, 31); // ASR #32
       } else if (n.shift_type == 3) {
-        e.lw(T2, ds::jit::OFF_CPSR, R_CTX); e.nop();
+        e.lw(T2, ds::jit::OFF_CPSR, R_CTX);
         e.srl(T2, T2, 29); e.andi(T2, T2, 1); e.sll(T2, T2, 31);
         e.srl(T1, T1, 1); e.or_(T1, T1, T2);
       }
@@ -1368,7 +1362,6 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 5: {
     e.move(12, T1);
     e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
-    e.nop();
     e.srl(T3, T3, 29);
     e.andi(T3, T3, 1);
     e.nor(T1, T1, 0);
@@ -1386,7 +1379,6 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 6: {
     e.move(12, T1);
     e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
-    e.nop();
     e.srl(T3, T3, 29);
     e.andi(T3, T3, 1);
     e.xori(T3, T3, 1);
@@ -1404,7 +1396,6 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
   case 7: {
     e.move(12, T1);
     e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
-    e.nop();
     e.srl(T3, T3, 29);
     e.andi(T3, T3, 1);
     e.xori(T3, T3, 1);
@@ -1476,7 +1467,6 @@ static void emit_n(MipsEmitter &e, const N &n, u32 cache_mask) {
       e.sll(12, 12, 28);
       e.or_(T3, T3, 12);
       e.lw(T1, ds::jit::OFF_CPSR, R_CTX);
-      e.nop();
       li(e, T0, 0x0fffffffu);
       e.and_(T1, T1, T0);
       e.srl(T0, T2, 31);
@@ -1527,7 +1517,7 @@ static void emit_pc_branch(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
   e.move(R_GUEST_PC, 2);
-  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX);
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
   for (size_t p : not_executed) e.patch_branch(p, e.size());
@@ -1549,7 +1539,7 @@ static void emit_thumb_bx_branch(MipsEmitter &e, u32 pc, u32 instr, u32 cache_ma
   e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
   e.jalr(R_RA, 25); e.nop();
   e.move(R_GUEST_PC, 2);
-  e.lw(R_BUDGET, OB, R_CTX); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX);
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
 }
@@ -1881,7 +1871,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   e.move(R_CTX, 4);
   if (has_native) {
     e.lw(R_BUDGET, OB, R_CTX);
-    e.nop();
     li(e, R_GUEST_PC, start + (thumb ? 4 : 8));
   }
   if (cache_regs)
@@ -1894,19 +1883,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.sw(R_BUDGET, OB, R_CTX);
     e.sw(R_GUEST_PC, OR + 60, R_CTX);
     e.move(4, R_CTX);
-    e.lw(T3, 20, R_SP); e.nop();
+    e.lw(T3, 20, R_SP);
     e.sw(T3, static_cast<s32>(CACHE_FRAME + 12), R_SP);
     e.move(R_RA, T3);
     if (cache_regs) {
       for (u32 r = 0; r < 15; ++r) {
         if (!(cache_mask & (1u << r))) continue;
         const u32 slot = __builtin_popcount(cache_mask & ((1u << r) - 1));
-        e.lw(CACHE_FIRST + slot, CACHE_SAVED + 4 * slot, R_SP); e.nop();
+        e.lw(CACHE_FIRST + slot, CACHE_SAVED + 4 * slot, R_SP);
       }
     }
-    e.lw(R_BUDGET, 48, R_SP); e.nop();
-    e.lw(R_FP, 56, R_SP); e.nop();
-    e.lw(R_CTX, 16, R_SP); e.nop();
+    e.lw(R_BUDGET, 48, R_SP);
+    e.lw(R_FP, 56, R_SP);
+    e.lw(R_CTX, 16, R_SP);
     e.addiu(R_SP, R_SP, CACHE_FRAME);
     e.jal(reinterpret_cast<uintptr_t>(jc.link)); e.nop();
     e.w(ds::jit::make_key(target, target_thumb));
@@ -2085,7 +2074,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
       e.jalr(R_RA, 25); e.nop();
       e.move(R_GUEST_PC, 2);
-      e.lw(R_BUDGET, OB, R_CTX); e.nop();
+      e.lw(R_BUDGET, OB, R_CTX);
       reload_cached(e, cache_mask);
       bx.push_back(e.b()); e.nop();
       ++native_count;
@@ -2113,7 +2102,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.sw(R_BUDGET, OB, R_CTX);
       e.jalr(R_RA, 25); e.nop();
       e.move(R_GUEST_PC, 2);
-      e.lw(R_BUDGET, OB, R_CTX); e.nop();
+      e.lw(R_BUDGET, OB, R_CTX);
       const size_t taken = e.b(); e.nop();
       for (size_t p : not_taken) e.patch_branch(p, e.size());
       emit_timing(e, *jc.ctx, pc, false);
@@ -2177,8 +2166,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.addiu(R_BUDGET, R_BUDGET, -2);
       e.addiu(T0, 0, 1);
       e.sb(T0, ds::jit::OFF_HALTED, R_CTX);
-      e.lw(T1, offsetof(CpuContext, hot) + offsetof(ds::JitHot, alerts), R_CTX);
-      e.nop(); e.ori(T1, T1, ds::jit::ALERT_HALTED);
+      e.lw(T1, offsetof(CpuContext, hot) + offsetof(ds::JitHot, alerts), R_CTX); e.ori(T1, T1, ds::jit::ALERT_HALTED);
       e.sw(T1, offsetof(CpuContext, hot) + offsetof(ds::JitHot, alerts), R_CTX);
       e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
       ex.push_back(e.b()); e.nop();
@@ -2232,7 +2220,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       emit_skip_if_false(e, is[q] >> 28, skip);
       const u32 status = (is[q] & (1u << 22)) ?
           offsetof(CpuContext, hot) + offsetof(JitHot, spsr) : ds::jit::OFF_CPSR;
-      e.lw(T1, status, R_CTX); e.nop();
+      e.lw(T1, status, R_CTX);
       putr(e, (is[q] >> 12) & 15u, T1, cache_mask);
       for (size_t p : skip) e.patch_branch(p, e.size());
       e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
@@ -2252,7 +2240,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         li(e, T1, ai(is[q]));
       else
         getr(e, T1, is[q] & 15u, cache_mask);
-      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
       li(e, T2, 0x00ffffffu); e.and_(T0, T0, T2);
       li(e, T2, 0xff000000u); e.and_(T1, T1, T2);
       e.or_(T0, T0, T1);
@@ -2280,7 +2268,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       emit_timing(e, *jc.ctx, pc, false);
       std::vector<size_t> skip;
       emit_skip_if_false(e, is[q] >> 28, skip);
-      e.lw(T0, ds::jit::OFF_CPSR, R_CTX); e.nop();
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
       e.andi(T0, T0, 31); e.addiu(T2, 0, 0x10);
       const size_t no_spsr = e.beq(T0, T2); e.nop();
       e.addiu(T2, 0, 0x1f);
@@ -2292,7 +2280,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
                        ((fields & 2) ? 0x0000ff00u : 0) |
                        ((fields & 4) ? 0x00ff0000u : 0) |
                        ((fields & 8) ? 0xff000000u : 0);
-      e.lw(T0, offsetof(CpuContext, hot) + offsetof(JitHot, spsr), R_CTX); e.nop();
+      e.lw(T0, offsetof(CpuContext, hot) + offsetof(JitHot, spsr), R_CTX);
       li(e, T2, ~mask); e.and_(T0, T0, T2);
       li(e, T2, mask); e.and_(T1, T1, T2);
       e.or_(T0, T0, T1);
@@ -2452,7 +2440,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       emit_n(e, n, cache_mask);
       if (n.mul_arm7 && (n.op == 16 || n.op == 17)) {
-        e.lw(T0, 52, R_SP); e.nop();
+        e.lw(T0, 52, R_SP);
         const bool signed_mul = n.op == 16 || n.signed_mul;
         if (signed_mul) { e.sra(T1, T0, 31); e.xor_(T0, T0, T1); }
         e.addiu(T3, 0, 1);
@@ -2572,9 +2560,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.nop();
     if (has_native) {
       e.lw(R_BUDGET, OB, R_CTX);
-      e.nop();
       e.lw(R_GUEST_PC, OR + 60, R_CTX);
-      e.nop();
     }
     if (cache_regs)
       reload_cached(e, cache_mask);
@@ -2604,7 +2590,6 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!(cache_mask & (1u << r))) continue;
       const u32 slot = __builtin_popcount(cache_mask & ((1u << r) - 1));
       e.lw(CACHE_FIRST + slot, CACHE_SAVED + 4 * slot, R_SP);
-      e.nop();
     }
   }
   e.addiu(R_SP, R_SP, static_cast<s32>(has_native ? CACHE_FRAME : 24));
