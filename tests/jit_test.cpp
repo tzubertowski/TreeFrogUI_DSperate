@@ -958,6 +958,18 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   CHECK(jit::attach(mj.nds, a9, !a9));
   Trial t{};
   if (a9) {
+    t = Trial{}; t.require_halt = true; t.regs[14] = HALT_STUB;
+    t.code = {0xE1A0000E, 0xE1A0000E, 0xE1A0000E, 0xE1A0000E,
+              0xE1A0000E, 0xEB000001, 0xEA000002, 0xE1A00000,
+              0xE3A01077, 0xE12FFF1E};
+    CHECK(run_both(mi, mj, t, true, 91020, true));
+    CHECK(mj.cpu.hot.regs[1] == 0x77);
+    t = Trial{}; t.thumb = true; t.require_halt = true; t.regs[14] = HALT_STUB;
+    t.code = {0xF000, 0xF808, 0xE00C, 0x46C0, 0x46C0, 0x46C0, 0x46C0,
+              0x46C0, 0x46C0, 0x46C0, 0x2177, 0x4770, 0x4770, 0x4770,
+              0x4770, 0x4770};
+    CHECK(run_both(mi, mj, t, true, 91019, true));
+    CHECK(mj.cpu.hot.regs[1] == 0x77);
     struct DspCase { u32 ins, rm, rs, rn; };
     static constexpr DspCase dsp[] = {
       {0xE1600281, 0x7FFF8000u, 0x00028001u, 0}, // SMULBB

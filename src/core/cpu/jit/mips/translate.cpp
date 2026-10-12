@@ -1945,7 +1945,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       const u32 target = pc + 4 + static_cast<u32>(high) +
                          ((is[q + 1] & 0x7ffu) << 1);
       li(e, T0, pc + 5);
-      e.sw(T0, OR + 56, R_CTX);
+      putr(e, 14, T0, cache_mask);
       li(e, T0, target + 4);
       e.move(R_GUEST_PC, T0);
       u32 code_after = 0;
@@ -2018,7 +2018,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       emit_skip_if_false(e, is[q] >> 28, not_taken);
       if (is[q] & (1u << 24)) {
         li(e, T0, pc + 4);
-        e.sw(T0, OR + 56, R_CTX);
+        putr(e, 14, T0, cache_mask);
       }
       const s32 off = static_cast<s32>(is[q] << 8) >> 6;
       const u32 target = pc + 8 + static_cast<u32>(off);
