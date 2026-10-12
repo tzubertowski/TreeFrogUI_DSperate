@@ -976,6 +976,21 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
       t.regs[13] = STACK; t.code = {dsp[i].ins, 0xE2800001};
       CHECK(run_both(mi, mj, t, true, 91200 + i, true));
     }
+    struct SmlalCase { u32 ins, hi, lo, rm, rs; };
+    static constexpr SmlalCase smlal[] = {
+      {0xE1445281, 0x00000001u, 0xfffffff0u, 0x00008000u, 0x00007fffu},
+      {0xE1476283, 0x7fffffffu, 0x00000000u, 0x80000000u, 0x8000ffffu},
+      {0xE1413281, 0x12345678u, 0x87654321u, 0xa5a55a5au, 0x5a5aa5a5u},
+    };
+    for (u32 i = 0; i < std::size(smlal); ++i) {
+      t = Trial{}; t.require_halt = true;
+      t.regs[(smlal[i].ins >> 16) & 15] = smlal[i].hi;
+      t.regs[(smlal[i].ins >> 12) & 15] = smlal[i].lo;
+      t.regs[smlal[i].ins & 15] = smlal[i].rm;
+      t.regs[(smlal[i].ins >> 8) & 15] = smlal[i].rs;
+      t.regs[13] = STACK; t.code = {smlal[i].ins, 0xE2800001};
+      CHECK(run_both(mi, mj, t, true, 91210 + i, true));
+    }
     t = Trial{}; t.require_halt = true; t.cpsr = 0x40000000u;
     t.regs[0] = 0x12345678u; t.regs[13] = STACK;
     t.code = {0x11003281, 0xE2800001}; // SMLABBNE skipped with Z set.
@@ -999,6 +1014,14 @@ __attribute__((noinline)) void native_compare_loop(Cpu which) {
   t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[2] = HALT_STUB;
   t.regs[13] = STACK; t.code = {0xE5812000, 0xE591F000}; // STR target; LDR pc,[r1]
   CHECK(run_both(mi, mj, t, a9, a9 ? 91024 : 71024, true));
+  t = Trial{};
+  t.require_halt = true; t.regs[0] = 0x12345678u; t.regs[1] = BUF_BASE;
+  t.regs[3] = BUF_BASE + 0x20; t.regs[13] = STACK;
+  t.code = {0xE5A10004, 0xE4912004, 0xE5831000, 0xE5832004};
+  CHECK(run_both(mi, mj, t, a9, a9 ? 91028 : 71028, true));
+  u32 writeback_results[2]{};
+  std::memcpy(writeback_results, mj.host(BUF_BASE + 0x20), sizeof writeback_results);
+  CHECK(writeback_results[0] == BUF_BASE + 8 && writeback_results[1] == 0x12345678u);
   t = Trial{};
   t.require_halt = true; t.regs[1] = BUF_BASE; t.regs[3] = BUF_BASE + 0x100;
   t.regs[13] = STACK;

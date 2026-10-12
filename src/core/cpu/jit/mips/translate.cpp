@@ -122,8 +122,9 @@ static bool native_thumb_mem(u32 x, ThumbMem &m, bool arm9) {
 static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const AOp op = ds::arm::decode_arm(x);
   const bool extra = op == AOp::LdrStrHImm || op == AOp::LdrStrHReg;
+  const bool pre = x & (1u << 24), writeback = x & (1u << 21);
   if ((!extra && op != AOp::LdrStrImm && op != AOp::LdrStrReg) ||
-      (x & (1u << 21))) return false; // unprivileged post-index is not covered
+      (!pre && writeback)) return false; // unprivileged post-index remains interpreted
   m.arm = true;
   m.cond = x >> 28;
   m.load = x & (1u << 20);
@@ -131,13 +132,13 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   m.width = extra ? (sh == 2 ? 1 : 2) : (x & (1u << 22)) ? 1 : 4;
   m.sign = extra && m.load && sh != 1;
   m.neg = !(x & (1u << 23));
-  m.post = !(x & (1u << 24));
-  m.writeback = m.post;
+  m.post = !pre;
+  m.writeback = m.post || writeback;
   m.rn = (x >> 16) & 15;
   m.rd = (x >> 12) & 15;
   m.base_const = m.rn == 15;
   if ((m.rd == 15 && (!m.load || m.width != 4 || extra)) ||
-      m.cond == 15 || (m.base_const && m.post) ||
+      m.cond == 15 || (m.base_const && m.writeback) ||
       (m.writeback && m.load && m.rd == m.rn) ||
       (extra && ((!m.load && sh != 1) || sh == 0)))
     return false; // LDRD/STRD are intentionally left to the interpreter.
@@ -396,6 +397,14 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
     return n.cond != 15 && n.rd != 15 && n.rm != 15 && n.shift_reg != 15 &&
            (!acc || n.rn != 15) && native_op_enabled(n.op, arm9);
   }
+  if (!thumb && arm9 && decoded == AOp::SmlalXY) {
+    const u32 hi = (x >> 16) & 15u, lo = (x >> 12) & 15u;
+    n.op = 23; n.rd = hi; n.rn = lo; n.rm = x & 15u;
+    n.shift_reg = (x >> 8) & 15u; n.shift = (x >> 5) & 1u;
+    n.shift_type = (x >> 6) & 1u; n.cond = x >> 28;
+    return n.cond != 15 && hi != 15 && lo != 15 && hi != lo &&
+           n.rm != 15 && n.shift_reg != 15 && native_op_enabled(n.op, arm9);
+  }
   if (!thumb && arm9 && decoded == AOp::Clz) {
     const u32 rd = (x >> 12) & 15u, rm = x & 15u;
     if (rd == 15 || rm == 15) return false;
@@ -448,7 +457,7 @@ static void putr(MipsEmitter &e, u32 r, u32 s, u32 cache_mask);
 static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
   getr(e, T0, n.rm, cache_mask);
   getr(e, T1, n.shift_reg, cache_mask);
-  if (n.op == 19 || n.op == 20) {
+  if (n.op == 19 || n.op == 20 || n.op == 23) {
     if (n.shift) e.srl(T0, T0, 16); else e.andi(T0, T0, 0xffff);
     if (n.shift_type) e.srl(T1, T1, 16); else e.andi(T1, T1, 0xffff);
     e.sll(T0, T0, 16); e.sra(T0, T0, 16);
@@ -460,7 +469,7 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
   e.mult(T0, T1); e.nop(); e.nop(); e.mflo(T2);
   if (n.op == 21 || n.op == 22) {
     e.mfhi(T3); e.srl(T0, T2, 16); e.sll(T3, T3, 16); e.or_(T2, T3, T0);
-  }
+  } else if (n.op == 23) e.mfhi(T3);
   if (n.op == 20 || n.op == 22) {
     getr(e, T1, n.rn, cache_mask);
     e.addu(T0, T2, T1);
@@ -473,6 +482,16 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
     e.sw(T3, ds::jit::OFF_CPSR, R_CTX);
     e.patch_branch(no_overflow, e.size());
     e.patch_branch(no_q, e.size());
+  } else if (n.op == 23) {
+    getr(e, T0, n.rn, cache_mask);
+    getr(e, T1, n.rd, cache_mask);
+    e.addu(T2, T2, T0);
+    e.sltu(T0, T2, T0);
+    e.addu(T3, T3, T1);
+    e.addu(T3, T3, T0);
+    putr(e, n.rn, T2, cache_mask);
+    putr(e, n.rd, T3, cache_mask);
+    return;
   } else e.move(T0, T2);
   putr(e, n.rd, T0, cache_mask);
 }
@@ -1700,6 +1719,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         native_insn(x, thumb, arm9, n)) {
       ++candidates;
       if (n.op == 18) score_reg(n.rm);
+      else if (n.op == 23) {
+        score_reg(n.rm); score_reg(n.shift_reg);
+        score_reg(n.rn); score_reg(n.rd);
+      }
       else {
         if (n.op != 13 || n.reg_shift) score_reg(n.rn);
         if (!n.im) score_reg(n.rm);
@@ -2314,8 +2337,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         ++q;
         continue;
       }
-      if (n.op >= 19 && n.op <= 22) {
+      if (n.op >= 19 && n.op <= 23) {
         emit_timing(e, *jc.ctx, key_pc(ks[q]), false);
+        if (n.op == 23) e.addiu(R_BUDGET, R_BUDGET, -1);
         std::vector<size_t> skip;
         emit_skip_if_false(e, n.cond, skip);
         emit_dsp_multiply(e, n, cache_mask);
