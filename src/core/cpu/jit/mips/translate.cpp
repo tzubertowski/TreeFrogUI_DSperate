@@ -241,8 +241,8 @@ static bool native_thumb_block(u32 x) {
     return n > 1;
   }
   if ((h & 0xf000u) != 0xc000u) return false;
-  const u32 list = h & 0xffu, rn = (h >> 8) & 7;
-  return __builtin_popcount(list) > 1 && !(list & (1u << rn));
+  const u32 list = h & 0xffu;
+  return __builtin_popcount(list) > 1;
 }
 static int arm7_data_slot(const CpuContext &c, u32 pc, bool thumb,
                           u32 width, bool load) {

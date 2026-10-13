@@ -642,6 +642,12 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // Multi-register Thumb PUSH/POP use one mapped-RAM block transfer.
     {Cpu::ARM9, true, {0xB4F0, 0x2400, 0x2500, 0x2600, 0x2700, 0xBCF0}, {0, 0, 0, 0, 4, 5, 6, 7}},
     {Cpu::ARM7, true, {0xB4F0, 0x2400, 0x2500, 0x2600, 0x2700, 0xBCF0}, {0, 0, 0, 0, 4, 5, 6, 7}},
+    // Thumb STM stores writeback when base is not first; Thumb LDM keeps the
+    // loaded base when it appears in the list.
+    {Cpu::ARM9, true, {0xC107, 0x46C0}, {0x12345678u, BUF_BASE, 0xa5a55a5au}},
+    {Cpu::ARM7, true, {0xC107, 0x46C0}, {0x12345678u, BUF_BASE, 0xa5a55a5au}},
+    {Cpu::ARM9, true, {0xC906, 0x46C0}, {0, BUF_BASE, 0}},
+    {Cpu::ARM7, true, {0xC906, 0x46C0}, {0, BUF_BASE, 0}},
     {Cpu::ARM9, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
     {Cpu::ARM7, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
     // ARMv5 saturating arithmetic, including both saturation stages of QDADD/QDSUB.
@@ -698,6 +704,9 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         (d.code[0] >> 28) == 15 && ((d.code[0] >> 24) & 0xf7u) == 0xf5u;
     const bool blx_imm = !d.thumb && a9 && !d.code.empty() &&
         (d.code[0] >> 28) == 15 && ((d.code[0] >> 25) & 7u) == 5;
+    const bool thumb_block_base = d.thumb && !d.code.empty() &&
+        (d.code[0] & 0xf000u) == 0xc000u &&
+        (d.code[0] & (1u << ((d.code[0] >> 8) & 7u)));
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
@@ -709,6 +718,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
       CHECK(jit::stats().instrs_translated > translated_before);
     if (qdsp || pld || blx_imm || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
+    if (thumb_block_base) CHECK(jit::stats().instrs_translated > translated_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
