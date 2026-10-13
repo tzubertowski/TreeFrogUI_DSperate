@@ -52,6 +52,10 @@ struct ThumbMem {
   bool neg = false, base_const = false, offset_const = false;
   bool writeback = false, post = false, after_jump = false;
 };
+struct ArmDual {
+  u32 rd = 0, rn = 0, rm = 0, imm = 0, cond = 14;
+  bool reg = false, load = false, neg = false, pre = false, writeback = false;
+};
 static bool native_thumb_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
   if (!arm9 && (h & 0xf800u) == 0x4800u) {
@@ -167,6 +171,25 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
     if (m.shift_type == 3 && !m.shift) return false; // RRX depends on CPSR.C
   }
   return true;
+}
+static bool native_arm_dual(u32 x, ArmDual &m) {
+  const AOp op = ds::arm::decode_arm(x);
+  const u32 sh = (x >> 5) & 3u;
+  if ((op != AOp::LdrStrHImm && op != AOp::LdrStrHReg) ||
+      (x & (1u << 20)) || (sh != 2 && sh != 3)) return false;
+  m.load = sh == 2;
+  m.rd = (x >> 12) & 15u;
+  m.rn = (x >> 16) & 15u;
+  m.cond = x >> 28;
+  m.pre = x & (1u << 24);
+  m.neg = !(x & (1u << 23));
+  m.writeback = !m.pre || (x & (1u << 21));
+  m.reg = op == AOp::LdrStrHReg;
+  m.rm = x & 15u;
+  m.imm = ((x >> 4) & 0xf0u) | (x & 15u);
+  return m.cond != 15 && m.rd < 14 && m.rn != 15 &&
+         (!m.reg || m.rm != 15) &&
+         m.rn != m.rd && m.rn != m.rd + 1;
 }
 static bool native_arm_single_multi(u32 x, ThumbMem &m) {
   const AOp op = ds::arm::decode_arm(x);
@@ -931,7 +954,7 @@ static void emit_arm7_block_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
 static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                                u32 instr, u32 cache_mask,
                                std::vector<size_t> &ex, bool thumb = false,
-                               u32 fallback_instr = 0) {
+                               u32 fallback_instr = 0, bool base_override = false) {
   const u32 list = instr & 0xffffu, rn = (instr >> 16) & 15;
   const u32 n = __builtin_popcount(list);
   const bool load = (instr & (1u << 20)) != 0;
@@ -950,9 +973,14 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     slow.push_back(e.beq(T1, 0)); e.nop();
   }
 
-  getr(e, T0, rn, cache_mask);
-  if (up) e.addiu(R_FP, T0, pre ? 4 : 0);
-  else e.addiu(R_FP, T0, static_cast<s32>(pre ? -static_cast<int>(n * 4) : -static_cast<int>(n * 4 - 4)));
+  if (base_override) {
+    e.lw(T0, 60, R_SP);
+    e.move(R_FP, T0);
+  } else {
+    getr(e, T0, rn, cache_mask);
+    if (up) e.addiu(R_FP, T0, pre ? 4 : 0);
+    else e.addiu(R_FP, T0, static_cast<s32>(pre ? -static_cast<int>(n * 4) : -static_cast<int>(n * 4 - 4)));
+  }
   e.srl(R_FP, R_FP, 2); e.sll(R_FP, R_FP, 2);
   e.addiu(T1, R_FP, static_cast<s32>(n * 4 - 1));
   e.xor_(T1, T1, R_FP); e.srl(T1, T1, 11);
@@ -994,6 +1022,10 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     if (load && user_bank && rn == 13) e.sw(T3, ds::jit::OFF_BANK_R13, R_CTX);
     else if (load && user_bank && rn == 14) e.sw(T3, ds::jit::OFF_BANK_R14, R_CTX);
     else putr(e, rn, T3, cache_mask);
+  }
+  if (base_override) {
+    e.lw(T3, 52, R_SP);
+    putr(e, rn, T3, cache_mask);
   }
   if (c.which == ds::Cpu::ARM9) {
     // The boundary guard shares one timing row; sum N + (n-1)S, then CD/CDI.
@@ -1043,6 +1075,10 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
 
   const size_t slow_at = e.size();
   for (size_t p : slow) e.patch_branch(p, slow_at);
+  if (base_override) {
+    e.lw(T3, 60, R_SP);
+    putr(e, rn, T3, cache_mask);
+  }
   e.move(4, R_CTX); li(e, 5, fallback_instr ? fallback_instr : instr);
   li(e, 6, ds::jit::make_key(pc, thumb));
   e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
@@ -1052,6 +1088,10 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   e.lw(R_BUDGET, OB, R_CTX);
   e.lw(R_GUEST_PC, OR + 60, R_CTX);
   reload_cached(e, cache_mask);
+  if (base_override) {
+    e.lw(T3, 52, R_SP);
+    putr(e, rn, T3, cache_mask);
+  }
   ex.push_back(e.b()); e.nop();
 
   const size_t not_exec_at = e.size();
@@ -1078,6 +1118,25 @@ static void emit_thumb_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   if (h & 0x0100u) list |= 1u << (pop ? 15 : 14);
   const u32 arm = (pop ? 0xe8bd0000u : 0xe92d0000u) | list;
   emit_arm_block_mem(e, c, pc, arm, cache_mask, ex, true, h);
+}
+static void emit_arm_dual_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
+                              const ArmDual &m, u32 cache_mask,
+                              std::vector<size_t> &ex) {
+  // After forming EA, the transfer and its fallback are a two-word IA block.
+  getr(e, T0, m.rn, cache_mask);
+  e.sw(T0, 52, R_SP);
+  if (m.reg) getr(e, T1, m.rm, cache_mask);
+  else li(e, T1, m.imm);
+  if (m.neg) e.subu(T2, T0, T1);
+  else e.addu(T2, T0, T1);
+  if (m.writeback) e.sw(T2, 52, R_SP);
+  if (m.pre) e.move(T0, T2);
+  e.sw(T0, 60, R_SP);
+
+  const u32 list = (1u << m.rd) | (1u << (m.rd + 1));
+  const u32 block = (m.cond << 28) | 0xe8800000u | (m.load ? 1u << 20 : 0) |
+                    (m.rn << 16) | list;
+  emit_arm_block_mem(e, c, pc, block, cache_mask, ex, false, block, true);
 }
 static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
                                  u32 instr, u32 cache_mask,
@@ -1836,6 +1895,15 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
       if (ds::arm::decode_arm(x) == AOp::MsrReg) score_reg(x & 15u);
     }
+    ArmDual dual{};
+    if (use_native_mem && arm9 && (!native_limit || candidates < native_limit) &&
+        native_arm_dual(x, dual)) {
+      ++candidates;
+      score_reg(dual.rn);
+      if (dual.reg) score_reg(dual.rm);
+      if (dual.load) { score_reg(dual.rd, 2); score_reg(dual.rd + 1, 2); }
+      else { score_reg(dual.rd); score_reg(dual.rd + 1); }
+    }
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, key_pc(ks[i]), m, arm9) :
                                 native_arm_mem(x, key_pc(ks[i]), m, arm9);
@@ -2356,6 +2424,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    ArmDual dual{};
+    if (use_native_mem && arm9 && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_arm_dual(is[q], dual)) {
+      note_code_dep(b, pc + 8);
+      b.dep_overflow = true;
+      emit_trace(e, is[q], pc, false, cache_mask);
+      emit_arm_dual_mem(e, *jc.ctx, pc, dual, cache_mask, ex);
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     if (use_native_mem && !thumb &&
         (!native_limit || native_count < native_limit) && native_arm_block(is[q])) {
       note_code_dep(b, pc + 8);
@@ -2574,6 +2655,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     B x{};
     u32 z = q;
     auto native_boundary = [&](u32 i) {
+      ArmDual dual{};
+      if (use_native_mem && arm9 && !thumb &&
+          (!native_limit || native_count < native_limit) &&
+          native_arm_dual(is[i], dual))
+        return true;
       if (use_native && (!native_limit || native_count < native_limit) &&
           (native_insn(is[i], thumb, arm9, n) ||
            (thumb && native_thumb_special(is[i], key_pc(ks[i]), n))))
@@ -2607,6 +2693,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
+        ArmDual dual{};
+        if (!thumb && arm9 && native_arm_dual(is[i], dual)) return true;
         if (!thumb && native_arm_block(is[i])) return true;
         if (thumb && native_thumb_block(is[i])) return true;
         ThumbMem m{};

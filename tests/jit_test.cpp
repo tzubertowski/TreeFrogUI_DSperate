@@ -642,6 +642,14 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xE1420051, 0xE2800003}, {0, 1, 0x40000000u}},
     {Cpu::ARM9, false, {0xE1620051, 0xE2800003}, {0, 0x80000000u, 0x40000000u}},
     {Cpu::ARM9, false, {0xE1620051, 0xE2800003}, {0, 0x7fffffffu, 0xffffffffu}},
+    // ARM9 LDRD/STRD, including pre/post-indexed, negative, and register offsets.
+    {Cpu::ARM9, false, {0xE1C300D8, 0xE5860000, 0xE5861004}, {0, 0, 0, BUF_BASE + 0x100}},
+    {Cpu::ARM9, false, {0xE1E300D8, 0xE5860000, 0xE5861004, 0xE5863008}, {0, 0, 0, BUF_BASE + 0x100}},
+    {Cpu::ARM9, false, {0xE0C300D8, 0xE5863008}, {0, 0, 0, BUF_BASE + 0x100}},
+    {Cpu::ARM9, false, {0xE14300D8, 0xE5860000, 0xE5861004}, {0, 0, 0, BUF_BASE + 0x100}},
+    {Cpu::ARM9, false, {0xE1C300F8}, {0x11223344u, 0x55667788u, 0, BUF_BASE + 0x100}},
+    {Cpu::ARM9, false, {0xE18300D4, 0xE5860000, 0xE5861004}, {0, 0, 0, BUF_BASE + 0x100, 12}},
+    {Cpu::ARM9, false, {0xE0E300D4, 0xE5863008}, {0, 0, 0, BUF_BASE + 0x7fc}},
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {
@@ -669,8 +677,13 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     const bool qdsp = !d.thumb && a9 && !d.code.empty() &&
         ds::arm::decode_arm(d.code[0]) >= AOp::QAdd &&
         ds::arm::decode_arm(d.code[0]) <= AOp::QDSub;
+    const bool dual = !d.thumb && a9 && !d.code.empty() &&
+        (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
+         ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
+        !(d.code[0] & (1u << 20)) && ((d.code[0] >> 5) & 3u) >= 2;
     const bool ok = run_both(mi, mj, t, a9, 100000 + n, true);
-    if (qdsp) CHECK(jit::stats().instrs_fallback == fallback_before);
+    if (qdsp || (dual && d.regs[3] != BUF_BASE + 0x7fc))
+      CHECK(jit::stats().instrs_fallback == fallback_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
