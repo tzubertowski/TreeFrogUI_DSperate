@@ -650,6 +650,11 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xE1C300F8}, {0x11223344u, 0x55667788u, 0, BUF_BASE + 0x100}},
     {Cpu::ARM9, false, {0xE18300D4, 0xE5860000, 0xE5861004}, {0, 0, 0, BUF_BASE + 0x100, 12}},
     {Cpu::ARM9, false, {0xE0E300D4, 0xE5863008}, {0, 0, 0, BUF_BASE + 0x7fc}},
+    {Cpu::ARM9, false, {0xE1090091}, {0, 0x11223344u}},
+    {Cpu::ARM9, false, {0xE1491091}, {0, 0x55667788u}},
+    {Cpu::ARM9, false, {0xE1030091}, {0, 0x89abcdefu, 0, BUF_BASE + 1}},
+    {Cpu::ARM9, false, {0x11090091}, {0, 0x11223344u}}, // SWPNE, taken
+    {Cpu::ARM9, false, {0x01090091}, {0, 0x11223344u}}, // SWPEQ, not taken
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {
@@ -674,6 +679,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     t.regs[13] = STACK;
     t.cpsr = 0;
     const u64 fallback_before = jit::stats().instrs_fallback;
+    const u64 translated_before = jit::stats().instrs_translated;
     const bool qdsp = !d.thumb && a9 && !d.code.empty() &&
         ds::arm::decode_arm(d.code[0]) >= AOp::QAdd &&
         ds::arm::decode_arm(d.code[0]) <= AOp::QDSub;
@@ -682,6 +688,10 @@ void directed(u32 start = 0, u32 limit = ~0u) {
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
         !(d.code[0] & (1u << 20)) && ((d.code[0] >> 5) & 3u) >= 2;
     const bool ok = run_both(mi, mj, t, a9, 100000 + n, true);
+    if (!d.thumb && a9 && !d.code.empty() &&
+        (ds::arm::decode_arm(d.code[0]) == AOp::Swp ||
+         ds::arm::decode_arm(d.code[0]) == AOp::Swpb))
+      CHECK(jit::stats().instrs_translated > translated_before);
     if (qdsp || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
     jit::detach(mj.nds);

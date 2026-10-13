@@ -56,6 +56,7 @@ struct ArmDual {
   u32 rd = 0, rn = 0, rm = 0, imm = 0, cond = 14;
   bool reg = false, load = false, neg = false, pre = false, writeback = false;
 };
+struct ArmSwap { u32 rd = 0, rn = 0, rm = 0, cond = 14; bool byte = false; };
 static bool native_thumb_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
   if (!arm9 && (h & 0xf800u) == 0x4800u) {
@@ -190,6 +191,13 @@ static bool native_arm_dual(u32 x, ArmDual &m) {
   return m.cond != 15 && m.rd < 14 && m.rn != 15 &&
          (!m.reg || m.rm != 15) &&
          m.rn != m.rd && m.rn != m.rd + 1;
+}
+static bool native_arm_swap(u32 x, ArmSwap &m) {
+  const AOp op = ds::arm::decode_arm(x);
+  if (op != AOp::Swp && op != AOp::Swpb) return false;
+  m.rd = (x >> 12) & 15u; m.rn = (x >> 16) & 15u; m.rm = x & 15u;
+  m.cond = x >> 28; m.byte = op == AOp::Swpb;
+  return m.cond != 15 && m.rd != 15 && m.rn != 15 && m.rm != 15;
 }
 static bool native_arm_single_multi(u32 x, ThumbMem &m) {
   const AOp op = ds::arm::decode_arm(x);
@@ -1138,6 +1146,83 @@ static void emit_arm_dual_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                     (m.rn << 16) | list;
   emit_arm_block_mem(e, c, pc, block, cache_mask, ex, false, block, true);
 }
+static void emit_arm_swap_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
+                               bool byte) {
+  e.lw(T3, offsetof(CpuContext, timing9), R_CTX);
+  e.srl(T1, R_FP, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
+  e.lbu(T0, byte ? 1 : 2, T1);
+  e.lbu(T2, byte ? 5 : 6, T1);
+  e.addu(T0, T0, T2);
+  const u32 nc = arm9_code_cost(c, pc, false);
+  if (nc >= 6) {
+    e.sltiu(T1, T0, 6);
+    const size_t short_data = e.bnez(T1); e.nop();
+    e.addiu(T0, T0, static_cast<s32>(nc - 6));
+    const size_t combined = e.b(); e.nop();
+    e.patch_branch(short_data, e.size());
+    li(e, T0, nc);
+    e.patch_branch(combined, e.size());
+  } else {
+    e.addiu(T1, 0, static_cast<s32>(nc));
+    e.sltu(T3, T1, T0);
+    e.subu(T3, 0, T3);
+    e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
+  }
+  e.subu(R_BUDGET, R_BUDGET, T0);
+}
+static void emit_arm_swap(MipsEmitter &e, const CpuContext &c, u32 pc,
+                          u32 instr, const ArmSwap &m, u32 cache_mask,
+                          std::vector<size_t> &ex) {
+  std::vector<size_t> not_executed;
+  emit_skip_if_false(e, m.cond, not_executed);
+  getr(e, T0, m.rn, cache_mask);
+  getr(e, T1, m.rm, cache_mask);
+  e.sw(T1, 52, R_SP);
+  e.move(R_FP, T0);
+  if (!m.byte) { e.srl(T0, T0, 2); e.sll(T0, T0, 2); }
+  e.srl(T1, T0, 11); e.sll(T1, T1, 2);
+  e.load_ptr(T2, c.page_table.raw()); e.addu(T2, T2, T1);
+  e.lw(T1, 0, T2);
+  e.srl(T2, T1, 30);
+  const size_t slow_tag = e.bnez(T2); e.nop();
+  e.sll(T2, T1, 2);
+  const size_t slow_unmapped = e.beq(T2, 0); e.nop();
+  e.addu(T2, T2, T0);
+  if (m.byte) e.lbu(T3, 0, T2); else e.lw(T3, 0, T2);
+  e.lw(T1, 52, R_SP);
+  if (m.byte) e.sb(T1, 0, T2); else e.sw(T1, 0, T2);
+  if (!m.byte) {
+    e.andi(T0, R_FP, 3); e.sll(T0, T0, 3);
+    e.move(T1, T3); e.srlv(T3, T1, T0);
+    e.subu(T0, 0, T0); e.sllv(T2, T1, T0); e.or_(T3, T3, T2);
+  }
+  e.sw(T3, 60, R_SP);
+  emit_arm_swap_cost(e, c, pc, m.byte);
+  e.lw(T3, 60, R_SP);
+  putr(e, m.rd, T3, cache_mask);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  const size_t fast_done = e.b(); e.nop();
+
+  const size_t slow = e.size();
+  e.patch_branch(slow_tag, slow); e.patch_branch(slow_unmapped, slow);
+  e.move(4, R_CTX); li(e, 5, instr); li(e, 6, ds::jit::make_key(pc, false));
+  e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
+  spill_cached(e, cache_mask);
+  e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+  e.jalr(R_RA, 25); e.nop();
+  e.lw(R_BUDGET, OB, R_CTX); e.lw(R_GUEST_PC, OR + 60, R_CTX);
+  reload_cached(e, cache_mask);
+  ex.push_back(e.b()); e.nop();
+
+  const size_t not_exec = e.size();
+  for (size_t p : not_executed) e.patch_branch(p, not_exec);
+  emit_timing(e, c, pc, false);
+  e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+  ex.push_back(e.blez(R_BUDGET)); e.nop();
+  const size_t end = e.size();
+  e.patch_branch(fast_done, end);
+}
 static void emit_arm_msr_control(MipsEmitter &e, const CpuContext &c, u32 pc,
                                  u32 instr, u32 cache_mask,
                                  std::vector<size_t> &ex) {
@@ -1904,6 +1989,12 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (dual.load) { score_reg(dual.rd, 2); score_reg(dual.rd + 1, 2); }
       else { score_reg(dual.rd); score_reg(dual.rd + 1); }
     }
+    ArmSwap swap{};
+    if (use_native_mem && arm9 && (!native_limit || candidates < native_limit) &&
+        native_arm_swap(x, swap)) {
+      ++candidates;
+      score_reg(swap.rn); score_reg(swap.rm); score_reg(swap.rd);
+    }
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, key_pc(ks[i]), m, arm9) :
                                 native_arm_mem(x, key_pc(ks[i]), m, arm9);
@@ -2424,6 +2515,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    ArmSwap swap{};
+    if (use_native_mem && arm9 && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_arm_swap(is[q], swap)) {
+      note_code_dep(b, pc + 8);
+      b.dep_overflow = true;
+      emit_trace(e, is[q], pc, false, cache_mask);
+      emit_arm_swap(e, *jc.ctx, pc, is[q], swap, cache_mask, ex);
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     ArmDual dual{};
     if (use_native_mem && arm9 && !thumb &&
         (!native_limit || native_count < native_limit) &&
@@ -2655,6 +2759,11 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     B x{};
     u32 z = q;
     auto native_boundary = [&](u32 i) {
+      ArmSwap swap{};
+      if (use_native_mem && arm9 && !thumb &&
+          (!native_limit || native_count < native_limit) &&
+          native_arm_swap(is[i], swap))
+        return true;
       ArmDual dual{};
       if (use_native_mem && arm9 && !thumb &&
           (!native_limit || native_count < native_limit) &&
@@ -2693,6 +2802,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
+        ArmSwap swap{};
+        if (!thumb && arm9 && native_arm_swap(is[i], swap)) return true;
         ArmDual dual{};
         if (!thumb && arm9 && native_arm_dual(is[i], dual)) return true;
         if (!thumb && native_arm_block(is[i])) return true;
