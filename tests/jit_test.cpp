@@ -6,6 +6,7 @@
 // sequence, which names the broken instruction.
 #include <cstdlib>
 #include "core/nds.h"
+#include "core/cpu/arm_decode.h"
 #include "core/cpu/timing_mode.h"
 #include "core/cpu/interp/interp.h"
 #include "core/cpu/jit/jit.h"
@@ -20,6 +21,7 @@
 #include <vector>
 
 using namespace ds;
+using ds::arm::AOp;
 
 namespace {
 
@@ -631,6 +633,15 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM7, true, {0xB4F0, 0x2400, 0x2500, 0x2600, 0x2700, 0xBCF0}, {0, 0, 0, 0, 4, 5, 6, 7}},
     {Cpu::ARM9, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
     {Cpu::ARM7, true, {0xB503, 0x2000, 0x2100, 0xBC03, 0xB001}, {0x1234, 0x5678}},
+    // ARMv5 saturating arithmetic, including both saturation stages of QDADD/QDSUB.
+    {Cpu::ARM9, false, {0xE1020051, 0xE2800003}, {0, 5, 7}},
+    {Cpu::ARM9, false, {0xE1020051, 0xE2800003}, {0, 0x7fffffffu, 1}},
+    {Cpu::ARM9, false, {0xE1220051, 0xE2800003}, {0, 0x80000000u, 1}},
+    {Cpu::ARM9, false, {0xE1220051, 0xE2800003}, {0, 0x7fffffffu, 0xffffffffu}},
+    {Cpu::ARM9, false, {0xE1420051, 0xE2800003}, {0, 7, 5}},
+    {Cpu::ARM9, false, {0xE1420051, 0xE2800003}, {0, 1, 0x40000000u}},
+    {Cpu::ARM9, false, {0xE1620051, 0xE2800003}, {0, 0x80000000u, 0x40000000u}},
+    {Cpu::ARM9, false, {0xE1620051, 0xE2800003}, {0, 0x7fffffffu, 0xffffffffu}},
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {
@@ -654,7 +665,12 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     t.regs[6] = BUF_BASE;
     t.regs[13] = STACK;
     t.cpsr = 0;
+    const u64 fallback_before = jit::stats().instrs_fallback;
+    const bool qdsp = !d.thumb && a9 && !d.code.empty() &&
+        ds::arm::decode_arm(d.code[0]) >= AOp::QAdd &&
+        ds::arm::decode_arm(d.code[0]) <= AOp::QDSub;
     const bool ok = run_both(mi, mj, t, a9, 100000 + n, true);
+    if (qdsp) CHECK(jit::stats().instrs_fallback == fallback_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);

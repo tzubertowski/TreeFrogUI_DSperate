@@ -394,6 +394,14 @@ static bool native_thumb(u32 x, N &n, bool arm9) {
 }
 static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
   const AOp decoded = !thumb ? ds::arm::decode_arm(x) : AOp::Undefined;
+  if (!thumb && arm9 && (decoded == AOp::QAdd || decoded == AOp::QSub ||
+                         decoded == AOp::QDAdd || decoded == AOp::QDSub)) {
+    n.op = 26 + static_cast<u32>(decoded) - static_cast<u32>(AOp::QAdd);
+    n.rd = (x >> 12) & 15u; n.rn = (x >> 16) & 15u; n.rm = x & 15u;
+    n.cond = x >> 28;
+    return n.cond != 15 && n.rd != 15 && n.rn != 15 && n.rm != 15 &&
+           native_op_enabled(n.op, arm9);
+  }
   if (!thumb && arm9 && (decoded == AOp::SmlaXY || decoded == AOp::SmulXY ||
                          decoded == AOp::SmlawY || decoded == AOp::SmulwY)) {
     const bool acc = decoded == AOp::SmlaXY || decoded == AOp::SmlawY;
@@ -506,6 +514,40 @@ static void emit_dsp_multiply(MipsEmitter &e, const N &n, u32 cache_mask) {
     return;
   } else e.move(T0, T2);
   putr(e, n.rd, T0, cache_mask);
+}
+static void li(MipsEmitter &e, u32 r, u32 v);
+static void emit_qadd(MipsEmitter &e, bool sub) {
+  if (sub) e.subu(T2, T0, T1); else e.addu(T2, T0, T1);
+  if (sub) {
+    e.xor_(T3, T0, T1); e.xor_(T1, T0, T2); e.and_(T3, T3, T1);
+  } else {
+    e.xor_(T3, T0, T2); e.xor_(T1, T1, T2); e.and_(T3, T3, T1);
+  }
+  const size_t overflow = e.bltz(T3); e.nop();
+  const size_t done = e.b(); e.nop();
+  e.patch_branch(overflow, e.size());
+  const size_t negative = e.bltz(T0); e.nop();
+  li(e, T2, 0x7fffffffu);
+  const size_t saturated = e.b(); e.nop();
+  e.patch_branch(negative, e.size());
+  li(e, T2, 0x80000000u);
+  e.patch_branch(saturated, e.size());
+  e.lw(T3, ds::jit::OFF_CPSR, R_CTX);
+  li(e, T1, 0x08000000u); e.or_(T3, T3, T1);
+  e.sw(T3, ds::jit::OFF_CPSR, R_CTX);
+  e.patch_branch(done, e.size());
+}
+static void emit_qdsp(MipsEmitter &e, const N &n, u32 cache_mask) {
+  getr(e, T0, n.rm, cache_mask);
+  getr(e, T1, n.rn, cache_mask);
+  if (n.op >= 28) {
+    e.move(T0, T1);
+    emit_qadd(e, false);
+    e.move(T1, T2);
+    getr(e, T0, n.rm, cache_mask);
+  }
+  emit_qadd(e, n.op == 27 || n.op == 29);
+  putr(e, n.rd, T2, cache_mask);
 }
 static void emit_skip_if_false(MipsEmitter &e, u32 cond, std::vector<size_t> &skip) {
   if (cond == 14) return;
@@ -2432,6 +2474,19 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         std::vector<size_t> skip;
         emit_skip_if_false(e, n.cond, skip);
         emit_dsp_multiply(e, n, cache_mask);
+        for (size_t p : skip) e.patch_branch(p, e.size());
+        e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+        ex.push_back(e.blez(R_BUDGET)); e.nop();
+        ++native_count;
+        rt().stats.instrs_translated++;
+        ++q;
+        continue;
+      }
+      if (n.op >= 26 && n.op <= 29) {
+        emit_timing(e, *jc.ctx, key_pc(ks[q]), false);
+        std::vector<size_t> skip;
+        emit_skip_if_false(e, n.cond, skip);
+        emit_qdsp(e, n, cache_mask);
         for (size_t p : skip) e.patch_branch(p, e.size());
         e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
         ex.push_back(e.blez(R_BUDGET)); e.nop();
