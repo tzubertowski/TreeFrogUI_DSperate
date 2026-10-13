@@ -52,14 +52,22 @@ struct ThumbMem {
   bool neg = false, base_const = false, offset_const = false;
   bool writeback = false, post = false, after_jump = false;
 };
-static bool native_thumb_mem(u32 x, ThumbMem &m, bool arm9) {
+static bool native_thumb_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const u32 h = static_cast<ds::u16>(x);
+  if (!arm9 && (h & 0xf800u) == 0x4800u) {
+    m.base_const = true;
+    m.base = (pc + 4) & ~3u;
+    m.rd = (h >> 8) & 7;
+    m.width = 4;
+    m.load = true;
+    m.imm = (h & 0xffu) << 2;
+    return true;
+  }
   if ((h & 0xfe00u) == 0xb400u || (h & 0xfe00u) == 0xbc00u) {
     const bool pop = h & 0x0800u;
     const u32 list = h & 0xffu;
     const bool extra = h & 0x0100u;
     if (pop && extra && !list) {
-      if (!arm9) return false;
       m.rn = 13; m.rd = 15; m.width = 4; m.load = true;
       m.writeback = true; m.post = true; m.imm = 4;
       m.after_jump = true;
@@ -1787,7 +1795,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (ds::arm::decode_arm(x) == AOp::MsrReg) score_reg(x & 15u);
     }
     ThumbMem m{};
-    bool mem_candidate = thumb ? native_thumb_mem(x, m, arm9) :
+    bool mem_candidate = thumb ? native_thumb_mem(x, key_pc(ks[i]), m, arm9) :
                                 native_arm_mem(x, key_pc(ks[i]), m, arm9);
     if (!mem_candidate && !thumb)
       mem_candidate = native_arm_single_multi(x, m);
@@ -1969,7 +1977,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       q += 2;
       continue;
     }
-    if (use_native_branch && !thumb && (!native_limit || native_count < native_limit) &&
+    // shortcut: ARM7 local-loop timing is unverified; re-enable after long-run validation.
+    if (use_native_branch && arm9 && !thumb &&
+        (!native_limit || native_count < native_limit) &&
         local_loop_branch(is[q], pc, start)) {
       note_code_dep(b, pc + 8);
       std::vector<size_t> not_taken;
@@ -2327,7 +2337,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     ThumbMem mem{};
-    bool native_mem = thumb ? native_thumb_mem(is[q], mem, arm9) :
+    bool native_mem = thumb ? native_thumb_mem(is[q], pc, mem, arm9) :
                              native_arm_mem(is[q], pc, mem, arm9);
     if (!native_mem && !thumb)
       native_mem = native_arm_single_multi(is[q], mem);
@@ -2513,6 +2523,14 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           (native_insn(is[i], thumb, arm9, n) ||
            (thumb && native_thumb_special(is[i], key_pc(ks[i]), n))))
         return true;
+      if (use_native && arm9 && thumb &&
+          (!native_limit || native_count < native_limit) &&
+          (is[i] & 0xf800u) == 0x4800u) {
+        const u32 literal = ((key_pc(ks[i]) + 4) & ~3u) + ((is[i] & 0xffu) << 2);
+        if ((literal >> 12) == (start >> 12) &&
+            jc.ctx->page_table.read_ptr(literal))
+          return true;
+      }
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
           (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
            native_mrs_spsr(is[i]) || native_mcr_halt(is[i], arm9) ||
@@ -2537,7 +2555,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         if (!thumb && native_arm_block(is[i])) return true;
         if (thumb && native_thumb_block(is[i])) return true;
         ThumbMem m{};
-        bool candidate = thumb ? native_thumb_mem(is[i], m, arm9) :
+        bool candidate = thumb ? native_thumb_mem(is[i], key_pc(ks[i]), m, arm9) :
             native_arm_mem(is[i], key_pc(ks[i]), m, arm9);
         if (!candidate && !thumb) candidate = native_arm_single_multi(is[i], m);
         if (candidate && (arm9 || arm7_data_slot(*jc.ctx, key_pc(ks[i]), thumb,

@@ -2017,9 +2017,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
   for (int r = 0; r < 15; ++r) literal.regs[r] = 0;
   literal.regs[1] = BUF_BASE;
   literal.regs[13] = STACK;
+  const u64 fallback_before = jit::stats().instrs_fallback;
   CHECK(run_both(mi, mj, literal, a9, a9 ? 94905 : 74905, true));
+  if (!a9) CHECK(jit::stats().instrs_fallback == fallback_before);
   std::memcpy(results, mj.host(BUF_BASE), sizeof(u32));
   CHECK(results[0] == 0x12345678u);
+  Trial thumb_pop_pc{};
+  thumb_pop_pc.thumb = true;
+  thumb_pop_pc.require_halt = true;
+  thumb_pop_pc.code = {0x6030, 0xbd00, 0x4608, 0x4700}; // STR r0,[r6]; POP {pc}; MOV r0,r1; BX r0
+  for (int r = 0; r < 15; ++r) thumb_pop_pc.regs[r] = 0;
+  thumb_pop_pc.regs[0] = CODE_BASE + 5;
+  thumb_pop_pc.regs[1] = HALT_STUB;
+  thumb_pop_pc.regs[6] = STACK;
+  thumb_pop_pc.regs[13] = STACK;
+  const u64 pop_fallback_before = jit::stats().instrs_fallback;
+  CHECK(run_both(mi, mj, thumb_pop_pc, a9, a9 ? 94906 : 74906, true));
+  if (!a9) CHECK(jit::stats().instrs_fallback == pop_fallback_before);
   Trial sp_add{};
   sp_add.thumb = true;
   sp_add.require_halt = true;
