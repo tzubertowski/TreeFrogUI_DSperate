@@ -231,8 +231,7 @@ static bool native_arm_block(u32 x) {
   const bool pc_load = op == AOp::Ldm && (list & (1u << 15));
   return (op == AOp::Ldm || op == AOp::Stm) && __builtin_popcount(list) > 1 &&
          (x >> 28) != 15 && (!(x & (1u << 22)) || !(list & (1u << 15))) && rn != 15 &&
-         (!(list & (1u << 15)) || pc_load) &&
-         (!(x & (1u << 21)) || !(list & (1u << rn)) || op == AOp::Ldm);
+         (!(list & (1u << 15)) || pc_load);
 }
 static bool native_thumb_block(u32 x) {
   const u32 h = static_cast<ds::u16>(x);
@@ -1020,7 +1019,9 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
       else if (user_bank && r == 14) e.sw(T1, ds::jit::OFF_BANK_R14, R_CTX);
       else putr(e, r, T1, cache_mask);
     } else {
-      if (user_bank && r == 13) { e.lw(T1, ds::jit::OFF_BANK_R13, R_CTX); }
+      if (writeback && r == rn && (list & ((1u << r) - 1)))
+        e.lw(T1, 52, R_SP);
+      else if (user_bank && r == 13) { e.lw(T1, ds::jit::OFF_BANK_R13, R_CTX); }
       else if (user_bank && r == 14) { e.lw(T1, ds::jit::OFF_BANK_R14, R_CTX); }
       else getr(e, T1, r, cache_mask);
       e.sw(T1, off, T2);
