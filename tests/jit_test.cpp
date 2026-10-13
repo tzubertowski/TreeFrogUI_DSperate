@@ -618,6 +618,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM7, false, {0xEF000000}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // MRC p15 reads (ARM9): DTCM region, control, main ID, then an ALU op.
     {Cpu::ARM9, false, {0xEE190F11, 0xEE111F10, 0xEE102F10, 0xE2800001}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // Cond=NV remains the unconditional/undefined space, not an ignored MCR.
+    {Cpu::ARM9, false, {0xFE070F9A}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // MOVS pc, lr (register form) from SVC: SPSR = SYS, lr = the halt stub.
     {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},

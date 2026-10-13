@@ -1763,7 +1763,8 @@ static bool native_arm_indirect(u32 x, bool arm9) {
          (x & 15u) != 15u;
 }
 static bool native_ignored_mcr(u32 x, bool arm9) {
-  if (!arm9 || ds::arm::decode_arm(x) != AOp::Mcr || ((x >> 8) & 15) != 15)
+  if (!arm9 || (x >> 28) == 15 || ds::arm::decode_arm(x) != AOp::Mcr ||
+      ((x >> 8) & 15) != 15)
     return false;
   return ds::jit::shape::mcr_is_nop(x, true) || ((x >> 16) & 15) == 0;
 }
