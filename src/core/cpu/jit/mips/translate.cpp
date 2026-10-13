@@ -229,9 +229,10 @@ static bool native_arm_block(u32 x) {
   const u32 list = x & 0xffffu;
   const u32 rn = (x >> 16) & 15;
   const bool pc_load = op == AOp::Ldm && (list & (1u << 15));
-  return (op == AOp::Ldm || op == AOp::Stm) && __builtin_popcount(list) > 1 &&
+  const bool empty_pc_load = !list && op == AOp::Ldm && (x & (1u << 22));
+  return (op == AOp::Ldm || op == AOp::Stm) && (!list || __builtin_popcount(list) > 1) &&
          (x >> 28) != 15 && (!(x & (1u << 22)) || !(list & (1u << 15))) && rn != 15 &&
-         (!(list & (1u << 15)) || pc_load || op == AOp::Stm);
+         !empty_pc_load && (!(list & (1u << 15)) || pc_load || op == AOp::Stm);
 }
 static bool native_thumb_block(u32 x) {
   const u32 h = static_cast<ds::u16>(x);
@@ -964,13 +965,17 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
                                u32 instr, u32 cache_mask,
                                std::vector<size_t> &ex, bool thumb = false,
                                u32 fallback_instr = 0, bool base_override = false) {
-  const u32 list = instr & 0xffffu, rn = (instr >> 16) & 15;
-  const u32 n = __builtin_popcount(list);
+  u32 list = instr & 0xffffu;
+  const u32 count = __builtin_popcount(list);
+  const u32 transfers = count ? count : 1;
+  u32 n = count;
+  if (!n) { list = 1u << 15; n = 16; } // ARM empty-list quirk: transfer PC, update by 64.
+  const u32 rn = (instr >> 16) & 15;
   const bool load = (instr & (1u << 20)) != 0;
   const bool up = (instr & (1u << 23)) != 0;
   const bool pre = (instr & (1u << 24)) != 0;
   const bool writeback = (instr & (1u << 21)) != 0;
-  const bool user_bank = (instr & (1u << 22)) != 0;
+  const bool user_bank = (instr & (1u << 22)) && (list & 0x7fffu);
   std::vector<size_t> not_executed, slow, done;
   emit_skip_if_false(e, instr >> 28, not_executed);
 
@@ -991,7 +996,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     else e.addiu(R_FP, T0, static_cast<s32>(pre ? -static_cast<int>(n * 4) : -static_cast<int>(n * 4 - 4)));
   }
   e.srl(R_FP, R_FP, 2); e.sll(R_FP, R_FP, 2);
-  e.addiu(T1, R_FP, static_cast<s32>(n * 4 - 1));
+  e.addiu(T1, R_FP, static_cast<s32>(transfers * 4 - 1));
   e.xor_(T1, T1, R_FP); e.srl(T1, T1, 11);
   slow.push_back(e.bnez(T1)); e.nop();
   e.srl(T1, R_FP, 11); e.sll(T1, T1, 2);
@@ -1045,9 +1050,9 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.srl(T1, R_FP, 12); e.sll(T1, T1, 3); e.addu(T1, T3, T1);
     e.lbu(T0, (load ? 0 : 4) + 2, T1);
     e.lbu(T2, (load ? 0 : 4) + 3, T1);
-    if (n == 2) e.addu(T0, T0, T2);
+    if (transfers == 2) e.addu(T0, T0, T2);
     else {
-      emit_scaled_wait(e, n);
+      emit_scaled_wait(e, transfers);
       e.addu(T0, T0, T2);
     }
     const u32 nc = arm9_code_cost(c, pc, thumb);
@@ -1066,7 +1071,7 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
       e.xor_(T0, T0, T1); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
     }
     e.subu(R_BUDGET, R_BUDGET, T0);
-  } else emit_arm7_block_cost(e, c, pc, R_FP, load, n, thumb);
+  } else emit_arm7_block_cost(e, c, pc, R_FP, load, transfers, thumb);
   if (load && (list & (1u << 15))) {
     e.lw(T1, 60, R_SP);
     e.move(4, R_CTX); e.move(5, T1);
