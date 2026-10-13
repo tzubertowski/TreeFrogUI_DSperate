@@ -230,7 +230,9 @@ static bool native_arm_block(u32 x) {
   const u32 rn = (x >> 16) & 15;
   const bool pc_load = op == AOp::Ldm && (list & (1u << 15));
   const bool empty_pc_load = !list && op == AOp::Ldm && (x & (1u << 22));
-  return (op == AOp::Ldm || op == AOp::Stm) && (!list || __builtin_popcount(list) > 1) &&
+  const bool stm_pc_only = op == AOp::Stm && list == (1u << 15);
+  return (op == AOp::Ldm || op == AOp::Stm) &&
+         (!list || __builtin_popcount(list) > 1 || stm_pc_only) &&
          (x >> 28) != 15 && (!(x & (1u << 22)) || !(list & (1u << 15))) && rn != 15 &&
          !empty_pc_load && (!(list & (1u << 15)) || pc_load || op == AOp::Stm);
 }
@@ -1337,7 +1339,13 @@ static void emit_arm_mrc(MipsEmitter &e, u32 instr, u32 cache_mask) {
     else e.move(T1, 0);
     break;
   }
-  putr(e, rd, T1, cache_mask);
+  if (rd == 15) {
+    e.lw(T2, ds::jit::OFF_CPSR, R_CTX);
+    li(e, T3, 0x0fffffffu); e.and_(T2, T2, T3);
+    li(e, T3, 0xf0000000u); e.and_(T1, T1, T3);
+    e.or_(T2, T2, T1);
+    e.sw(T2, ds::jit::OFF_CPSR, R_CTX);
+  } else putr(e, rd, T1, cache_mask);
 }
 static void spill_cached(MipsEmitter &e, u32 cache_mask) {
   for (u32 r = 0; r < 15; ++r)
@@ -1781,8 +1789,7 @@ static bool native_ignored_mcr(u32 x, bool arm9) {
 }
 static bool native_mrc(u32 x, bool arm9) {
   return arm9 && (x >> 28) != 15 && ds::arm::decode_arm(x) == AOp::Mrc &&
-         ((x >> 8) & 15u) == 15u && ((x >> 12) & 15u) != 15u &&
-         native_op_enabled(24, arm9);
+         ((x >> 8) & 15u) == 15u && native_op_enabled(24, arm9);
 }
 static bool native_mcr_halt(u32 x, bool arm9) {
   if (!arm9 || (x >> 28) == 15 || ds::arm::decode_arm(x) != AOp::Mcr ||

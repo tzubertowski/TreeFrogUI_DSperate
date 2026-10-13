@@ -422,6 +422,10 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM7, false, {0xE8868001}, {0x12345678u}},
     {Cpu::ARM9, false, {0xE8A68001}, {0x12345678u}},
     {Cpu::ARM7, false, {0xE8A68001}, {0x12345678u}},
+    {Cpu::ARM9, false, {0xE8868000}, {0}},
+    {Cpu::ARM7, false, {0xE8868000}, {0}},
+    {Cpu::ARM9, false, {0xE8A68000}, {0}},
+    {Cpu::ARM7, false, {0xE8A68000}, {0}},
     // ARM empty register lists transfer r15 and advance/decrement the base by 64.
     {Cpu::ARM9, false, {0xE8800000}, {BUF_BASE + 0x100}},
     {Cpu::ARM7, false, {0xE8A00000}, {BUF_BASE + 0x100}},
@@ -649,6 +653,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM7, false, {0xEF000000}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // MRC p15 reads (ARM9): DTCM region, control, main ID, then an ALU op.
     {Cpu::ARM9, false, {0xEE190F11, 0xEE111F10, 0xEE102F10, 0xE2800001}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // MRC with Rd=pc transfers only the CP15 value's top four bits to CPSR.
+    {Cpu::ARM9, false, {0xEE10FF10}, {0}},
     // Cond=NV remains the unconditional/undefined space, not an ignored MCR.
     {Cpu::ARM9, false, {0xFE070F9A}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // Unconditional PLD is a timing-only hint on ARM9 and undefined on ARM7.
@@ -734,7 +740,9 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         (d.code[0] & (1u << ((d.code[0] >> 8) & 7u)));
     const bool stm_pc = !d.thumb && !d.code.empty() &&
         ds::arm::decode_arm(d.code[0]) == AOp::Stm &&
-        (d.code[0] & 0x8000u) && __builtin_popcount(d.code[0] & 0xffffu) > 1;
+        (d.code[0] & 0x8000u);
+    const bool mrc_pc = !d.thumb && !d.code.empty() &&
+        ds::arm::decode_arm(d.code[0]) == AOp::Mrc && ((d.code[0] >> 12) & 15u) == 15u;
     size_t empty_block_at = d.code.size();
     if (!d.thumb) for (size_t i = 0; i < d.code.size(); ++i) {
       const AOp op = ds::arm::decode_arm(d.code[i]);
@@ -756,6 +764,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
       CHECK(jit::stats().instrs_fallback == fallback_before);
     if (thumb_block_base) CHECK(jit::stats().instrs_translated > translated_before);
     if (stm_pc) CHECK(jit::stats().instrs_translated > translated_before);
+    if (mrc_pc) CHECK(jit::stats().instrs_translated > translated_before);
     if (empty_block_at < d.code.size())
       CHECK(jit::stats().instrs_translated > translated_before + empty_block_at);
     jit::detach(mj.nds);
