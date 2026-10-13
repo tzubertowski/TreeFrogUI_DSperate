@@ -674,6 +674,17 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // MOVS pc, lr (register form) from SVC: SPSR = SYS, lr = the halt stub.
     {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // Other data-processing S+PC forms compute the return target natively.
+    {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1B0F083}, {0, 0x1f, 0, HALT_STUB >> 1}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1B0F083}, {0, 0x1f, 0, HALT_STUB >> 1}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0x1010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0x1010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0x0010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0x0010F003}, {HALT_STUB, 0x1f, HALT_STUB, 0xffffffffu}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE390F000}, {HALT_STUB, 0x1f, HALT_STUB}, CODE_BASE, 1 << 12, false, true},
+    {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE390F000}, {HALT_STUB, 0x1f, HALT_STUB}, CODE_BASE, 1 << 12, false, true},
     // SMLALBB / SMLALTT r4 (lo), r5 (hi), r1, r2: a carry out of the low word, and a negative product.
     {Cpu::ARM9, false, {0xE1454281, 0xE2800001}, {0, 0x7FFF8000u, 0x00028001u, 0, 0xFFFFFFF0u, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE14542E1, 0xE2800001}, {0, 0x7FFF8000u, 0x80018001u, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -756,6 +767,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         ds::arm::decode_arm(d.code[0]) == AOp::Mrc && ((d.code[0] >> 12) & 15u) == 15u;
     size_t empty_block_at = d.code.size();
     size_t ldm_exc_return_at = d.code.size();
+    size_t dp_exc_return_at = d.code.size();
     if (!d.thumb) for (size_t i = 0; i < d.code.size(); ++i) {
       const AOp op = ds::arm::decode_arm(d.code[i]);
       if ((op == AOp::Ldm || op == AOp::Stm) && !(d.code[i] & 0xffffu)) {
@@ -763,6 +775,10 @@ void directed(u32 start = 0, u32 limit = ~0u) {
       }
       if (op == AOp::Ldm && (d.code[i] & (1u << 22)) && (d.code[i] & 0x8000u))
         ldm_exc_return_at = i;
+      const u32 x = d.code[i], dp_op = (x >> 21) & 15u;
+      if ((x >> 28) == 14 && (x & (1u << 20)) && ((x >> 12) & 15u) == 15u &&
+          !(dp_op >= 8 && dp_op <= 11))
+        dp_exc_return_at = i;
     }
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
@@ -782,6 +798,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
       CHECK(jit::stats().instrs_translated > translated_before + empty_block_at);
     if (ldm_exc_return_at < d.code.size())
       CHECK(jit::stats().instrs_translated > translated_before + ldm_exc_return_at);
+    if (dp_exc_return_at < d.code.size())
+      CHECK(jit::stats().instrs_translated > translated_before + dp_exc_return_at);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
