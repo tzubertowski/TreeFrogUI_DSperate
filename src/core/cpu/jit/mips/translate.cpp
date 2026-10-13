@@ -229,12 +229,11 @@ static bool native_arm_block(u32 x) {
   const u32 list = x & 0xffffu;
   const u32 rn = (x >> 16) & 15;
   const bool pc_load = op == AOp::Ldm && (list & (1u << 15));
-  const bool empty_pc_load = !list && op == AOp::Ldm && (x & (1u << 22));
   const bool stm_pc_only = op == AOp::Stm && list == (1u << 15);
   return (op == AOp::Ldm || op == AOp::Stm) &&
          (!list || __builtin_popcount(list) > 1 || stm_pc_only) &&
-         (x >> 28) != 15 && (!(x & (1u << 22)) || !(list & (1u << 15))) && rn != 15 &&
-         !empty_pc_load && (!(list & (1u << 15)) || pc_load || op == AOp::Stm);
+         (x >> 28) != 15 && rn != 15 &&
+         (!(list & (1u << 15)) || pc_load || op == AOp::Stm);
 }
 static bool native_thumb_block(u32 x) {
   const u32 h = static_cast<ds::u16>(x);
@@ -977,7 +976,8 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   const bool up = (instr & (1u << 23)) != 0;
   const bool pre = (instr & (1u << 24)) != 0;
   const bool writeback = (instr & (1u << 21)) != 0;
-  const bool user_bank = (instr & (1u << 22)) && (list & 0x7fffu);
+  const bool exception_return = load && (instr & (1u << 22)) && (list & (1u << 15));
+  const bool user_bank = (instr & (1u << 22)) && !exception_return && (list & 0x7fffu);
   std::vector<size_t> not_executed, slow, done;
   emit_skip_if_false(e, instr >> 28, not_executed);
 
@@ -1077,8 +1077,12 @@ static void emit_arm_block_mem(MipsEmitter &e, const CpuContext &c, u32 pc,
   if (load && (list & (1u << 15))) {
     e.lw(T1, 60, R_SP);
     e.move(4, R_CTX); e.move(5, T1);
-    e.addiu(6, 0, c.which == ds::Cpu::ARM9 ? 1 : 0);
-    e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
+    if (exception_return) {
+      e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_exc_return));
+    } else {
+      e.addiu(6, 0, c.which == ds::Cpu::ARM9 ? 1 : 0);
+      e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
+    }
     spill_cached(e, cache_mask);
     e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
     e.jalr(R_RA, 25); e.nop();

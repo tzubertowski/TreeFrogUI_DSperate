@@ -300,6 +300,11 @@ bool compare(Machine& a, Machine& b, const Trial& t, u32 seed, bool report) {
   if (t.require_halt && (!a.cpu.halted || !b.cpu.halted)) ok = false;
   for (int i = 0; i < 16; ++i) if (a.cpu.hot.regs[i] != b.cpu.hot.regs[i]) ok = false;
   if (a.cpu.hot.cpsr != b.cpu.hot.cpsr) ok = false;
+  if (a.cpu.hot.spsr != b.cpu.hot.spsr ||
+      std::memcmp(a.cpu.bank_r8_r12, b.cpu.bank_r8_r12, sizeof a.cpu.bank_r8_r12) ||
+      std::memcmp(a.cpu.bank_r13, b.cpu.bank_r13, sizeof a.cpu.bank_r13) ||
+      std::memcmp(a.cpu.bank_r14, b.cpu.bank_r14, sizeof a.cpu.bank_r14) ||
+      std::memcmp(a.cpu.bank_spsr, b.cpu.bank_spsr, sizeof a.cpu.bank_spsr)) ok = false;
   if (a.cpu.halted != b.cpu.halted) ok = false;
   // Both engines end the slice with budget -1 on a halt; the budget at the
   // moment of halting is the consumed-cycle comparison.
@@ -446,6 +451,12 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM7, false, {0xE5801000, 0xE9120000}, {BUF_BASE + 0x100, HALT_STUB, BUF_BASE + 0x140}, CODE_BASE, 1 << 24, false, true},
     {Cpu::ARM9, false, {0xE5801000, 0xE8B00000}, {BUF_BASE + 0x100, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
     {Cpu::ARM7, false, {0xE5801000, 0xE8B00000}, {BUF_BASE + 0x100, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    // LDM^ with pc restores CPSR from SPSR after loading the other registers.
+    {Cpu::ARM9, false, {0xE5821000, 0xE5823004, 0xE8F28001}, {0, 0x76543210, BUF_BASE + 0x100, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xE5821000, 0xE5823004, 0xE8F28001}, {0, 0x76543210, BUF_BASE + 0x100, HALT_STUB}, CODE_BASE, 1 << 24, false, true},
+    // Repeat from SVC with a real SPSR and banked SP, returning to SYS.
+    {Cpu::ARM9, false, {0xE5821000, 0xE5823004, 0xE321F0D3, 0xE16FF004, 0xE1A0D002, 0xE8FD8001}, {0, 0x76543210, BUF_BASE + 0x100, HALT_STUB, 0x1f}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xE5821000, 0xE5823004, 0xE321F0D3, 0xE16FF004, 0xE1A0D002, 0xE8FD8001}, {0, 0x76543210, BUF_BASE + 0x100, HALT_STUB, 0x1f}, CODE_BASE, 1 << 24, false, true},
     // Same with a store, and with a conditional instruction in front.
     {Cpu::ARM9, false, {0xE0811002, 0xE7891102}, {0, 1, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0x03A00001, 0xE7991102}, {0, 0, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -744,12 +755,14 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     const bool mrc_pc = !d.thumb && !d.code.empty() &&
         ds::arm::decode_arm(d.code[0]) == AOp::Mrc && ((d.code[0] >> 12) & 15u) == 15u;
     size_t empty_block_at = d.code.size();
+    size_t ldm_exc_return_at = d.code.size();
     if (!d.thumb) for (size_t i = 0; i < d.code.size(); ++i) {
       const AOp op = ds::arm::decode_arm(d.code[i]);
       if ((op == AOp::Ldm || op == AOp::Stm) && !(d.code[i] & 0xffffu)) {
         empty_block_at = i;
-        break;
       }
+      if (op == AOp::Ldm && (d.code[i] & (1u << 22)) && (d.code[i] & 0x8000u))
+        ldm_exc_return_at = i;
     }
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
@@ -767,6 +780,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     if (mrc_pc) CHECK(jit::stats().instrs_translated > translated_before);
     if (empty_block_at < d.code.size())
       CHECK(jit::stats().instrs_translated > translated_before + empty_block_at);
+    if (ldm_exc_return_at < d.code.size())
+      CHECK(jit::stats().instrs_translated > translated_before + ldm_exc_return_at);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
