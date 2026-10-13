@@ -1854,6 +1854,7 @@ static bool thumb_branch(u32 x) {
 }
 static bool thumb_bl_prefix(u32 x) { return (x & 0xf800u) == 0xf000u; }
 static bool thumb_bl_suffix(u32 x) { return (x & 0xf800u) == 0xf800u; }
+static bool thumb_blx_suffix(u32 x) { return (x & 0xf800u) == 0xe800u; }
 static bool native_thumb_special(u32 x, u32 pc, N &n) {
   const u32 h = static_cast<ds::u16>(x);
   if ((h & 0xf000u) == 0xa000u) {
@@ -2144,21 +2145,46 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++q;
       continue;
     }
+    if (use_native_branch && arm9 && thumb && thumb_blx_suffix(is[q]) &&
+        (!native_limit || native_count < native_limit)) {
+      note_code_dep(b, pc + 2);
+      getr(e, T0, 14, cache_mask);
+      e.addiu(T1, 0, static_cast<s32>((is[q] & 0x7ffu) << 1));
+      e.addu(T0, T0, T1);
+      li(e, T1, ~3u); e.and_(T0, T0, T1);
+      li(e, T1, (pc + 2) | 1u); putr(e, 14, T1, cache_mask);
+      e.move(4, R_CTX); e.move(5, T0); e.addiu(6, 0, 1);
+      e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_mips_indirect_branch));
+      spill_cached(e, cache_mask);
+      e.sw(R_GUEST_PC, OR + 60, R_CTX); e.sw(R_BUDGET, OB, R_CTX);
+      e.jalr(R_RA, 25); e.nop();
+      e.move(R_GUEST_PC, 2);
+      e.lw(R_BUDGET, OB, R_CTX);
+      reload_cached(e, cache_mask);
+      ex.push_back(e.b()); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
     if (use_native_branch && thumb && q + 1 < is.size() &&
         (!native_limit || native_count + 2 <= native_limit) &&
-        thumb_bl_prefix(is[q]) && thumb_bl_suffix(is[q + 1])) {
+        thumb_bl_prefix(is[q]) &&
+        (thumb_bl_suffix(is[q + 1]) || (arm9 && thumb_blx_suffix(is[q + 1])))) {
+      const bool blx = thumb_blx_suffix(is[q + 1]);
       note_code_dep(b, pc + 4);
       note_code_dep(b, pc + 6);
       emit_timing(e, *jc.ctx, pc, true);
       const s32 high = static_cast<s32>((is[q] & 0x7ffu) << 21) >> 9;
-      const u32 target = pc + 4 + static_cast<u32>(high) +
-                         ((is[q + 1] & 0x7ffu) << 1);
+      u32 target = pc + 4 + static_cast<u32>(high) +
+                   ((is[q + 1] & 0x7ffu) << 1);
+      if (blx) target &= ~3u;
       li(e, T0, pc + 5);
       putr(e, 14, T0, cache_mask);
-      li(e, T0, target + 4);
+      li(e, T0, target + (blx ? 8 : 4));
       e.move(R_GUEST_PC, T0);
       u32 code_after = 0;
-      const u32 refill = ds::refill_cycles(*jc.ctx, target, true, &code_after);
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, !blx, &code_after);
       if (refill) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
       if (arm9) {
         li(e, T0, code_after);
@@ -2173,7 +2199,12 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
-      emit_link(target, true);
+      if (blx) {
+        e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
+        li(e, T1, ~0x20u); e.and_(T0, T0, T1);
+        e.sw(T0, ds::jit::OFF_CPSR, R_CTX);
+      }
+      emit_link(target, !blx);
       native_count += 2;
       rt().stats.instrs_translated += 2;
       q += 2;
@@ -2799,7 +2830,10 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
         if (thumb && (thumb_branch(is[i]) ||
             (thumb_bl_prefix(is[i]) && i + 1 < is.size() &&
-             thumb_bl_suffix(is[i + 1]))))
+             (thumb_bl_suffix(is[i + 1]) ||
+              (arm9 && thumb_blx_suffix(is[i + 1]))))))
+          return true;
+        if (thumb && arm9 && thumb_blx_suffix(is[i]))
           return true;
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {

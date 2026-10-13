@@ -491,6 +491,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, true, {0x448F, 0x46C0, 0x4801, 0x4700, 0x46C0, 0x46C0, static_cast<u32>(HALT_STUB & 0xFFFF), static_cast<u32>(HALT_STUB >> 16)}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, true, {0xB404, 0xBD00}, {0, 0, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, true, {0xE800}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, HALT_STUB}},
+    {Cpu::ARM9, true, {0xF000, 0xEFFE}, {}, CODE_BASE}, // paired BLX to ARM halt stub
     // SWP / SWPB [r9]: rd != rm, rd == rm (the in-place swap), rd == rn
     // (the base register takes the loaded word), conditional taken / not
     // taken, and through a register far from the buffer (the slow path).
