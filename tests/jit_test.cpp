@@ -10,6 +10,7 @@
 #include "core/cpu/timing_mode.h"
 #include "core/cpu/interp/interp.h"
 #include "core/cpu/jit/jit.h"
+#include "core/cpu/wait_loop.h"
 #include "core/mem/bus.h"
 #include "check.h"
 
@@ -378,6 +379,31 @@ bool run_both(Machine& mi, Machine& mj, const Trial& tr, bool a9, u32 seed, bool
   return compare(mi, mj, tr, seed, report);
 }
 
+void wait_loop_jit_smoke() {
+  Machine mi(Cpu::ARM7), mj(Cpu::ARM7);
+  Trial t{};
+  t.thumb = true;
+  t.code_base = 0x2f08;
+  t.code = {0x3801, 0xdcfd}; // subs r0,#1; bgt self
+  t.regs[0] = 10000;
+  t.budget = 3000;
+  t.strict_budget = true;
+  load_trial(mi, t, false);
+  load_trial(mj, t, false);
+  CHECK(ds::cpu::wait_loop_hook_wanted(mj.cpu, t.code_base, true));
+  CHECK(jit::attach(mj.nds, false, true));
+
+  const u32 saved_hook = ds::cpu::g_wait_loop_r15_7;
+  ds::cpu::g_wait_loop_r15_7 = 0;
+  run_machine(mi, &interp::run);
+  ds::cpu::g_wait_loop_r15_7 = t.code_base + 4;
+  const u64 runs = ds::cpu::wait_loop_stats().runs;
+  run_machine(mj, &jit::run);
+  ds::cpu::g_wait_loop_r15_7 = saved_hook;
+  CHECK(ds::cpu::wait_loop_stats().runs > runs);
+  CHECK(compare(mi, mj, t, 0, true));
+}
+
 // Hand-written sequences for cases the generator reaches rarely. Registers
 // follow the generator's conventions (r9/r6 = buffer, r13 = stack).
 struct Directed {
@@ -392,6 +418,25 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // the branch target, not the fall-through PC.
     {Cpu::ARM9, false, {0xEA000001, 0xE2800001, 0xE2800002, 0xE2800003}, {0}, CODE_BASE, 1 << 24, false, true},
     {Cpu::ARM7, false, {0xEA000001, 0xE2800001, 0xE2800002, 0xE2800003}, {0}, CODE_BASE, 1 << 24, false, true},
+    // Tight backwards ARM loops stay inside generated code and retain exact budget boundaries.
+    {Cpu::ARM9, false, {0xE2500001, 0x1AFFFFFD}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM7, false, {0xE2500001, 0x1AFFFFFD}, {10000}, CODE_BASE, 256, false, false, true},
+    // A backward branch to an instruction inside the block avoids redispatch too.
+    {Cpu::ARM9, false, {0xE2801001, 0xE2500001, 0x1AFFFFFD, 0xE5851000}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM7, false, {0xE2801001, 0xE2500001, 0x1AFFFFFD, 0xE5851000}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM9, false, {0xE2801001, 0xE2500001, 0x1AFFFFFD, 0xE5851000}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xE2801001, 0xE2500001, 0x1AFFFFFD, 0xE5851000}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM9, false, {0xE2500001, 0x1AFFFFFD}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, false, {0xE2500001, 0x1AFFFFFD}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM9, true, {0x3801, 0xD1FD}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM7, true, {0x3801, 0xD1FD}, {10000}, CODE_BASE, 256, false, false, true},
+    // Thumb backward branches can target a prior instruction inside the block too.
+    {Cpu::ARM9, true, {0x2100, 0x3101, 0x3801, 0xD1FC}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, true, {0x2100, 0x3101, 0x3801, 0xD1FC}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM9, true, {0x2100, 0x3101, 0x3801, 0xD1FC}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM7, true, {0x2100, 0x3101, 0x3801, 0xD1FC}, {10000}, CODE_BASE, 256, false, false, true},
+    {Cpu::ARM9, true, {0x3801, 0xD1FD}, {5}, CODE_BASE, 1 << 24, false, true},
+    {Cpu::ARM7, true, {0x3801, 0xD1FD}, {5}, CODE_BASE, 1 << 24, false, true},
     // BL enters a second block and BX LR returns to the caller's block, which
     // then skips over the inline function to the generated halt branch.
     {Cpu::ARM9, false, {0xEB000001, 0xEA000002, 0xE1A00000, 0xE2800001, 0xE12FFF1E}, {0}, CODE_BASE, 1 << 24, false, true},
@@ -725,6 +770,11 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xE1030091}, {0, 0x89abcdefu, 0, BUF_BASE + 1}},
     {Cpu::ARM9, false, {0x11090091}, {0, 0x11223344u}}, // SWPNE, taken
     {Cpu::ARM9, false, {0x01090091}, {0, 0x11223344u}}, // SWPEQ, not taken
+    {Cpu::ARM7, false, {0xE1090091}, {0, 0x11223344u}},
+    {Cpu::ARM7, false, {0xE1030091}, {0, 0x89abcdefu, 0, BUF_BASE + 1}},
+    {Cpu::ARM7, false, {0xE1491091}, {0, 0x55667788u}}, // SWPB
+    {Cpu::ARM7, false, {0xE1090090}, {0, 0x89abcdefu}}, // Rd == Rm
+    {Cpu::ARM7, false, {0x01090091}, {0, 0x11223344u}}, // condition failed
   };
   u32 n = 0, done = 0;
   for (const Directed& d : cases) {
@@ -784,13 +834,17 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
         !(d.code[0] & (1u << 20)) && ((d.code[0] >> 5) & 3u) >= 2;
+    const bool interior_arm_loop = !d.thumb && d.code.size() == 4 &&
+        d.code[0] == 0xE2801001u && d.code[1] == 0xE2500001u &&
+        d.code[2] == 0x1AFFFFFDu;
     const bool ok = run_both(mi, mj, t, a9, 100000 + n, true);
-    if (!d.thumb && a9 && !d.code.empty() &&
+    if (!d.thumb && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::Swp ||
          ds::arm::decode_arm(d.code[0]) == AOp::Swpb))
       CHECK(jit::stats().instrs_translated > translated_before);
     if (qdsp || pld || blx_imm || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
+    if (interior_arm_loop) CHECK(jit::stats().instrs_fallback == fallback_before);
     if (thumb_block_base) CHECK(jit::stats().instrs_translated > translated_before);
     if (stm_pc) CHECK(jit::stats().instrs_translated > translated_before);
     if (mrc_pc) CHECK(jit::stats().instrs_translated > translated_before);
@@ -1921,6 +1975,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
       CHECK(results[0] == long_mul_lo[i] && results[1] == long_mul_hi[i]);
       CHECK((results[2] & 0xf0000000u) == long_mul_flags[i]);
     }
+    static constexpr u32 long_mul_overlap_ops[] = {
+        0xE0900090u, 0xE0B00090u, 0xE0D00090u, 0xE0F00090u
+    }; // UMULLS, UMLALS, SMULLS, SMLALS with Rs aliasing RdHi or RdLo
+    for (u32 op : long_mul_overlap_ops) for (u32 alias = 0; alias < 2; ++alias) {
+      Trial t{};
+      t.require_halt = true;
+      t.code = {op | 0x00012000u | ((alias ? 2u : 1u) << 8) | 3u,
+                0xE5852000u, 0xE5851004u, 0xE10F6000u, 0xE5856008u};
+      t.regs[1] = 0x80000001u;
+      t.regs[2] = 0x12345678u;
+      t.regs[3] = 0xf1234567u;
+      t.regs[5] = BUF_BASE;
+      t.regs[13] = STACK;
+      const u64 fallback_before = jit::stats().instrs_fallback;
+      CHECK(run_both(mi, mj, t, true, 94040 + (op >> 20) * 2 + alias, true));
+      CHECK(jit::stats().instrs_fallback == fallback_before);
+    }
     const struct { u32 instr, a, b, acc, out, cpsr, flags; } mla_cases[] = {
         {0xe0225493u, 0x12345678u, 0x10u, 0xf0000001u, 0x13456781u,
          0x30000000u, 0x30000000u},
@@ -2034,6 +2105,23 @@ __attribute__((noinline)) void native_thumb_smoke(Cpu which) {
     CHECK(run_both(mi, mj, mrs, false, 74009, true));
     std::memcpy(arm7_words, mj.host(BUF_BASE), sizeof(u32));
     CHECK(arm7_words[0] == mj.cpu.hot.cpsr);
+    static constexpr u32 long_mul_ops[] = {
+        0xE0900090u, 0xE0B00090u, 0xE0D00090u, 0xE0F00090u
+    };
+    for (u32 op : long_mul_ops) for (u32 alias = 0; alias < 2; ++alias) {
+      Trial t{};
+      t.require_halt = true;
+      t.code = {op | 0x00012000u | ((alias ? 2u : 1u) << 8) | 3u,
+                0xE5852000u, 0xE5851004u, 0xE10F6000u, 0xE5856008u};
+      t.regs[1] = 0x80000001u;
+      t.regs[2] = 0x12345678u;
+      t.regs[3] = 0xf1234567u;
+      t.regs[5] = BUF_BASE;
+      t.regs[13] = STACK;
+      const u64 fallback_before = jit::stats().instrs_fallback;
+      CHECK(run_both(mi, mj, t, false, 74020 + (op >> 20) * 2 + alias, true));
+      CHECK(jit::stats().instrs_fallback == fallback_before);
+    }
     Trial mvn{};
     mvn.require_halt = true;
     mvn.code = {0xE1E01003, 0xE5841000};
@@ -2363,6 +2451,7 @@ int main(int argc, char** argv) {
   }
   directed();
   native_alu();
+  wait_loop_jit_smoke();
   fuzz(Cpu::ARM9, false, trials, 1000);
   fuzz(Cpu::ARM9, true, trials, 2000);
   fuzz(Cpu::ARM7, false, trials, 3000);

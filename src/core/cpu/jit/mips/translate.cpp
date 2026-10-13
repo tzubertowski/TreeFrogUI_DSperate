@@ -1,5 +1,6 @@
 #include "core/cpu/arm_decode.h"
 #include "core/cpu/cpu_cycles.h"
+#include "core/cpu/wait_loop.h"
 #include "core/cpu/jit/block_shape.h"
 #include "core/cpu/jit/mips/convention.h"
 #include "core/cpu/jit/jit_internal.h"
@@ -466,10 +467,10 @@ static bool native_insn(u32 x, bool thumb, bool arm9, N &n) {
                  decoded == AOp::Smull || decoded == AOp::Smlal)) {
     const u32 hi = (x >> 16) & 15u, lo = (x >> 12) & 15u;
     const u32 rs = (x >> 8) & 15u, rm = x & 15u;
-    // shortcut: overlapping long multiplies use the interpreter after a ROM
-    // mismatch; remove once cache aliasing is understood.
+    // ARMv5 requires RdHi, RdLo and Rm to be distinct; Rs may overlap either
+    // destination because all operands are read before the result is written.
     if (hi == 15 || lo == 15 || rs == 15 || rm == 15 || hi == lo ||
-        hi == rs || hi == rm || lo == rs || lo == rm)
+        hi == rm || lo == rm)
       return false;
     if (!native_op_enabled(17, arm9)) return false;
     n.op = 17; n.rd = hi; n.rdlo = lo; n.rn = rs; n.rm = rm; n.cond = x >> 28;
@@ -1185,6 +1186,42 @@ static void emit_arm_swap_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
   }
   e.subu(R_BUDGET, R_BUDGET, T0);
 }
+static void emit_arm7_swap_cost(MipsEmitter &e, const CpuContext &c, u32 pc,
+                                bool byte) {
+  // SWP performs two non-sequential accesses; ARM7 charges both before CDI.
+  e.lw(T3, offsetof(CpuContext, timing7), R_CTX);
+  e.srl(T2, R_FP, 15); e.sll(T2, T2, 2); e.addu(T3, T3, T2);
+  e.lbu(T0, byte ? 0 : 2, T3); e.sll(T0, T0, 1);
+  const u32 nc = c.timing7[pc >> 15][2];
+  li(e, T1, nc);
+  auto max3_cdi = [&] {
+    // max(a, b, a+b-3), with a in T1 and b in T0.
+    e.addu(T2, T1, T0); e.addiu(T2, T2, -3);
+    e.sltu(T3, T1, T0); e.subu(T3, 0, T3);
+    e.xor_(T1, T1, T0); e.and_(T1, T1, T3); e.xor_(T1, T1, T0);
+    e.sltu(T3, T1, T2); e.subu(T3, 0, T3);
+    e.xor_(T0, T1, T2); e.and_(T0, T0, T3); e.xor_(T0, T0, T1);
+  };
+  e.srl(T3, R_FP, 24); e.addiu(T2, 0, 2);
+  const size_t data_main = e.beq(T3, T2); e.nop();
+  if ((pc >> 24) == 2) {
+    e.addiu(T1, T1, 1); // Different regions: nc+1 overlaps the two data beats by 3.
+    max3_cdi();
+    const size_t done = e.b(); e.nop();
+    e.patch_branch(data_main, e.size());
+    e.addu(T0, T0, T1); // Same main-RAM region: no overlap.
+    e.patch_branch(done, e.size());
+  } else {
+    e.addiu(T0, T0, 1);
+    e.addu(T0, T0, T1);
+    const size_t done = e.b(); e.nop();
+    e.patch_branch(data_main, e.size());
+    e.addiu(T0, T0, 1);
+    max3_cdi();
+    e.patch_branch(done, e.size());
+  }
+  e.subu(R_BUDGET, R_BUDGET, T0);
+}
 static void emit_arm_swap(MipsEmitter &e, const CpuContext &c, u32 pc,
                           u32 instr, const ArmSwap &m, u32 cache_mask,
                           std::vector<size_t> &ex) {
@@ -1212,7 +1249,8 @@ static void emit_arm_swap(MipsEmitter &e, const CpuContext &c, u32 pc,
     e.subu(T0, 0, T0); e.sllv(T2, T1, T0); e.or_(T3, T3, T2);
   }
   e.sw(T3, 60, R_SP);
-  emit_arm_swap_cost(e, c, pc, m.byte);
+  if (c.which == ds::Cpu::ARM9) emit_arm_swap_cost(e, c, pc, m.byte);
+  else emit_arm7_swap_cost(e, c, pc, m.byte);
   e.lw(T3, 60, R_SP);
   putr(e, m.rd, T3, cache_mask);
   e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
@@ -1767,11 +1805,12 @@ static void emit_thumb_bx_branch(MipsEmitter &e, u32 pc, u32 instr, u32 cache_ma
   reload_cached(e, cache_mask);
   ex.push_back(e.b()); e.nop();
 }
-static bool local_loop_branch(u32 x, u32 pc, u32 start) {
+static bool local_loop_branch(u32 x, u32 pc, u32 start, u32 &target) {
   if ((x & 0x0e000000u) != 0x0a000000u || (x & (1u << 24)))
     return false;
   const s32 off = static_cast<s32>(x << 8) >> 6;
-  return pc + 8 + static_cast<u32>(off) == start;
+  target = pc + 8 + static_cast<u32>(off);
+  return target >= start && target < pc;
 }
 static bool arm_branch(u32 x) {
   return (x >> 28) != 15 && (x & 0x0e000000u) == 0x0a000000u;
@@ -2144,6 +2183,22 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
   std::vector<B> bs;
   std::vector<size_t> ex;
   std::vector<size_t> bx;
+  if (ds::cpu::wait_loop_hook_wanted(*jc.ctx, start, thumb)) {
+    spill_cached(e, cache_mask);
+    e.sw(R_GUEST_PC, OR + 60, R_CTX);
+    e.sw(R_BUDGET, OB, R_CTX);
+    e.move(4, R_CTX);
+    li(e, 5, ds::jit::WAIT_LOOP_MARKER);
+    li(e, 6, ds::jit::make_key(start - 2, true));
+    e.load_ptr(25, reinterpret_cast<const void *>(&jit_h_fallback));
+    e.jalr(R_RA, 25);
+    e.nop();
+    e.lw(R_BUDGET, OB, R_CTX);
+    e.lw(R_GUEST_PC, OR + 60, R_CTX);
+    if (cache_regs) reload_cached(e, cache_mask);
+    ex.push_back(e.blez(R_BUDGET));
+    e.nop();
+  }
   auto emit_link = [&](u32 target, bool target_thumb) {
     spill_cached(e, cache_mask);
     e.sw(R_BUDGET, OB, R_CTX);
@@ -2166,8 +2221,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     e.jal(reinterpret_cast<uintptr_t>(jc.link)); e.nop();
     e.w(ds::jit::make_key(target, target_thumb));
   };
-  const size_t loop_head = e.size();
+  std::vector<size_t> instruction_entries(is.size(), static_cast<size_t>(-1));
   for (u32 q = 0; q < is.size();) {
+    instruction_entries[q] = e.size();
     const u32 pc = key_pc(ks[q]);
     if (use_native_branch && thumb &&
         (!native_limit || native_count < native_limit) &&
@@ -2256,18 +2312,20 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       q += 2;
       continue;
     }
-    // shortcut: ARM7 local-loop timing is unverified; re-enable after long-run validation.
-    if (use_native_branch && arm9 && !thumb &&
-        (!native_limit || native_count < native_limit) &&
-        local_loop_branch(is[q], pc, start)) {
+    u32 loop_target = 0;
+    const bool local_loop = !thumb && local_loop_branch(is[q], pc, start, loop_target);
+    const u32 loop_index = local_loop ? (loop_target - start) / 4 : 0;
+    if (use_native_branch && local_loop && loop_index < q &&
+        loop_index < is.size() && key_pc(ks[loop_index]) == loop_target &&
+        instruction_entries[loop_index] != static_cast<size_t>(-1) &&
+        (!native_limit || native_count < native_limit)) {
       note_code_dep(b, pc + 8);
       std::vector<size_t> not_taken;
       emit_skip_if_false(e, is[q] >> 28, not_taken);
-      li(e, T0, start + 8);
+      li(e, T0, loop_target + 8);
       e.move(R_GUEST_PC, T0);
-      const u32 target = start;
       u32 code_after = 0;
-      const u32 refill = ds::refill_cycles(*jc.ctx, target, false, &code_after);
+      const u32 refill = ds::refill_cycles(*jc.ctx, loop_target, false, &code_after);
       if (refill) {
         e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
       }
@@ -2277,16 +2335,16 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         e.addiu(T0, 0, 0);
         e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
       } else {
-        li(e, T0, target >> 15);
+        li(e, T0, loop_target >> 15);
         e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
-        li(e, T0, target >> 24);
+        li(e, T0, loop_target >> 24);
         e.sw(T0, offsetof(CpuContext, code_region), R_CTX);
       }
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
       const size_t loop = e.b();
       e.nop();
-      e.patch_branch(loop, loop_head);
+      e.patch_branch(loop, instruction_entries[loop_index]);
       for (size_t p : not_taken) e.patch_branch(p, e.size());
       li(e, T0, pc + 12);
       e.move(R_GUEST_PC, T0);
@@ -2480,7 +2538,16 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
-      emit_link(target, true);
+      const bool local = target >= start && target < pc;
+      const u32 target_index = local ? (target - start) / 2 : 0;
+      if (local && target_index < q && target_index < is.size() &&
+          key_pc(ks[target_index]) == target &&
+          instruction_entries[target_index] != static_cast<size_t>(-1)) {
+        const size_t loop = e.b(); e.nop();
+        e.patch_branch(loop, instruction_entries[target_index]);
+      } else {
+        emit_link(target, true);
+      }
       for (size_t p : not_taken) e.patch_branch(p, e.size());
       if (conditional) {
         emit_timing(e, *jc.ctx, pc, true);
@@ -2647,7 +2714,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       continue;
     }
     ArmSwap swap{};
-    if (use_native_mem && arm9 && !thumb &&
+    if (use_native_mem && !thumb &&
         (!native_limit || native_count < native_limit) &&
         native_arm_swap(is[q], swap)) {
       note_code_dep(b, pc + 8);
@@ -2891,7 +2958,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     u32 z = q;
     auto native_boundary = [&](u32 i) {
       ArmSwap swap{};
-      if (use_native_mem && arm9 && !thumb &&
+      if (use_native_mem && !thumb &&
           (!native_limit || native_count < native_limit) &&
           native_arm_swap(is[i], swap))
         return true;
@@ -2940,7 +3007,7 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       }
       if (use_native_mem && (!native_limit || native_count < native_limit)) {
         ArmSwap swap{};
-        if (!thumb && arm9 && native_arm_swap(is[i], swap)) return true;
+        if (!thumb && native_arm_swap(is[i], swap)) return true;
         ArmDual dual{};
         if (!thumb && arm9 && native_arm_dual(is[i], dual)) return true;
         if (!thumb && native_arm_block(is[i])) return true;
