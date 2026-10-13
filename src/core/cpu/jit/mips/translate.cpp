@@ -1758,7 +1758,9 @@ static bool local_loop_branch(u32 x, u32 pc, u32 start) {
 static bool arm_branch(u32 x) {
   return (x >> 28) != 15 && (x & 0x0e000000u) == 0x0a000000u;
 }
-// shortcut: ARM9 BLX-immediate stays interpreted until its real-ROM frame hash matches.
+static bool native_arm_blx_imm(u32 x, bool arm9) {
+  return arm9 && (x >> 28) == 15 && ((x >> 25) & 7u) == 5;
+}
 static bool native_arm_indirect(u32 x, bool arm9) {
   const u32 op = x & 0x0FFFFFF0u;
   return (x >> 28) != 15u &&
@@ -2050,6 +2052,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       if (!pc_branch.im) score_reg(pc_branch.rm);
       if (pc_branch.reg_shift) score_reg(pc_branch.shift_reg);
     }
+    if (use_native_branch && (!native_limit || candidates < native_limit) &&
+        native_arm_blx_imm(x, arm9))
+      ++candidates;
     N thumb_pc_branch{};
     if (use_native_branch && thumb &&
         (!native_limit || candidates < native_limit) &&
@@ -2295,6 +2300,32 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       e.move(R_GUEST_PC, T0);
       ex.push_back(e.blez(R_BUDGET));
       e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native_branch && !thumb &&
+        (!native_limit || native_count < native_limit) &&
+        native_arm_blx_imm(is[q], arm9)) {
+      note_code_dep(b, pc + 8);
+      emit_trace(e, is[q], pc, false, cache_mask);
+      const s32 off = static_cast<s32>(is[q] << 8) >> 6;
+      const u32 target = (pc + 8 + static_cast<u32>(off) +
+                          ((is[q] >> 23) & 2u)) & ~1u;
+      li(e, T0, pc + 4); putr(e, 14, T0, cache_mask);
+      e.lw(T0, ds::jit::OFF_CPSR, R_CTX);
+      e.ori(T0, T0, 0x20); e.sw(T0, ds::jit::OFF_CPSR, R_CTX);
+      li(e, T0, target + 4); e.move(R_GUEST_PC, T0);
+      u32 code_after = 0;
+      const u32 refill = ds::refill_cycles(*jc.ctx, target, true, &code_after);
+      if (refill) e.addiu(R_BUDGET, R_BUDGET, -static_cast<s32>(refill));
+      li(e, T0, code_after);
+      e.sw(T0, offsetof(CpuContext, code_cycles), R_CTX);
+      e.addiu(T0, 0, 0);
+      e.sb(T0, offsetof(CpuContext, branch_fetch), R_CTX);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      emit_link(target, true);
       ++native_count;
       rt().stats.instrs_translated++;
       ++q;
@@ -2845,7 +2876,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
         if (thumb && native_thumb_pc_branch(is[i], thumb_pc_branch)) return true;
         N pc_branch{};
         if (!thumb && native_arm_pc_branch(is[i], pc_branch, arm9)) return true;
-        if (!thumb && (arm_branch(is[i]) || native_arm_indirect(is[i], arm9)))
+        if (!thumb && (arm_branch(is[i]) || native_arm_indirect(is[i], arm9) ||
+                       native_arm_blx_imm(is[i], arm9)))
           return true;
         if (thumb && (thumb_branch(is[i]) ||
             (thumb_bl_prefix(is[i]) && i + 1 < is.size() &&

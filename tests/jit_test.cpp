@@ -467,6 +467,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // Indirect branches (refill costs are compared through the budget).
     // bx r1 -> the ARM halt stub; bx r1 -> Thumb code at +4 (even) / +6 (odd)
     // that loads the halt stub's address and bx's to it; blx r1 (ARM9).
+    {Cpu::ARM9, false, {0xFA000000, 0xE1A00000, 0x46C04700}, {HALT_STUB}}, // BLX imm to Thumb BX -> ARM halt
     {Cpu::ARM9, false, {0xE12FFF11, 0xE2800001}, {0, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE12FFF11, 0xE2800001}, {0, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0xE12FFF11, 0x47004801, 0x46C046C0, HALT_STUB}, {0, CODE_BASE + 4 + 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -691,6 +692,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         ds::arm::decode_arm(d.code[0]) <= AOp::QDSub;
     const bool pld = !d.thumb && a9 && !d.code.empty() &&
         (d.code[0] >> 28) == 15 && ((d.code[0] >> 24) & 0xf7u) == 0xf5u;
+    const bool blx_imm = !d.thumb && a9 && !d.code.empty() &&
+        (d.code[0] >> 28) == 15 && ((d.code[0] >> 25) & 7u) == 5;
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
@@ -700,7 +703,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         (ds::arm::decode_arm(d.code[0]) == AOp::Swp ||
          ds::arm::decode_arm(d.code[0]) == AOp::Swpb))
       CHECK(jit::stats().instrs_translated > translated_before);
-    if (qdsp || pld || (dual && d.regs[3] != BUF_BASE + 0x7fc))
+    if (qdsp || pld || blx_imm || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
