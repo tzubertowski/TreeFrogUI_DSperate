@@ -417,6 +417,11 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     // as ordinary transfers on this core; exercise word and byte forms.
     {Cpu::ARM9, false, {0xE4B30004, 0xE4A31004, 0xE4F30001, 0xE4E31001}, {0, 0xaabbccddu, 0, BUF_BASE + 0x100}},
     {Cpu::ARM7, false, {0xE4B30004, 0xE4A31004, 0xE4F30001, 0xE4E31001}, {0, 0xaabbccddu, 0, BUF_BASE + 0x100}},
+    // Native multi-register STM with r15 stores ARM's visible PC + 12.
+    {Cpu::ARM9, false, {0xE8868001}, {0x12345678u}},
+    {Cpu::ARM7, false, {0xE8868001}, {0x12345678u}},
+    {Cpu::ARM9, false, {0xE8A68001}, {0x12345678u}},
+    {Cpu::ARM7, false, {0xE8A68001}, {0x12345678u}},
     // Same with a store, and with a conditional instruction in front.
     {Cpu::ARM9, false, {0xE0811002, 0xE7891102}, {0, 1, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM9, false, {0x03A00001, 0xE7991102}, {0, 0, 0x12345678, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -707,6 +712,9 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     const bool thumb_block_base = d.thumb && !d.code.empty() &&
         (d.code[0] & 0xf000u) == 0xc000u &&
         (d.code[0] & (1u << ((d.code[0] >> 8) & 7u)));
+    const bool stm_pc = !d.thumb && !d.code.empty() &&
+        ds::arm::decode_arm(d.code[0]) == AOp::Stm &&
+        (d.code[0] & 0x8000u) && __builtin_popcount(d.code[0] & 0xffffu) > 1;
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
@@ -719,6 +727,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     if (qdsp || pld || blx_imm || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
     if (thumb_block_base) CHECK(jit::stats().instrs_translated > translated_before);
+    if (stm_pc) CHECK(jit::stats().instrs_translated > translated_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
     CHECK(ok);
