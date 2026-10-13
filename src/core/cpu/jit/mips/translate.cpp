@@ -137,8 +137,7 @@ static bool native_arm_mem(u32 x, u32 pc, ThumbMem &m, bool arm9) {
   const AOp op = ds::arm::decode_arm(x);
   const bool extra = op == AOp::LdrStrHImm || op == AOp::LdrStrHReg;
   const bool pre = x & (1u << 24), writeback = x & (1u << 21);
-  if ((!extra && op != AOp::LdrStrImm && op != AOp::LdrStrReg) ||
-      (!pre && writeback)) return false; // unprivileged post-index remains interpreted
+  if (!extra && op != AOp::LdrStrImm && op != AOp::LdrStrReg) return false;
   m.arm = true;
   m.cond = x >> 28;
   m.load = x & (1u << 20);
