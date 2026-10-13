@@ -199,6 +199,9 @@ static bool native_arm_swap(u32 x, ArmSwap &m) {
   m.cond = x >> 28; m.byte = op == AOp::Swpb;
   return m.cond != 15 && m.rd != 15 && m.rn != 15 && m.rm != 15;
 }
+static bool native_arm_pld(u32 x, bool arm9) {
+  return arm9 && (x >> 28) == 15 && ((x >> 24) & 0xf7u) == 0xf5u;
+}
 static bool native_arm_single_multi(u32 x, ThumbMem &m) {
   const AOp op = ds::arm::decode_arm(x);
   const u32 list = x & 0xffffu;
@@ -1997,6 +2000,9 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
       ++candidates;
       score_reg(swap.rn); score_reg(swap.rm); score_reg(swap.rd);
     }
+    if (use_native && (!native_limit || candidates < native_limit) &&
+        native_arm_pld(x, arm9))
+      ++candidates;
     ThumbMem m{};
     bool mem_candidate = thumb ? native_thumb_mem(x, key_pc(ks[i]), m, arm9) :
                                 native_arm_mem(x, key_pc(ks[i]), m, arm9);
@@ -2432,6 +2438,18 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
     }
     if (use_native && !thumb &&
         (!native_limit || native_count < native_limit) &&
+        native_arm_pld(is[q], arm9)) {
+      note_code_dep(b, pc + 8);
+      emit_timing(e, *jc.ctx, pc, false);
+      e.addiu(R_GUEST_PC, R_GUEST_PC, 4);
+      ex.push_back(e.blez(R_BUDGET)); e.nop();
+      ++native_count;
+      rt().stats.instrs_translated++;
+      ++q;
+      continue;
+    }
+    if (use_native && !thumb &&
+        (!native_limit || native_count < native_limit) &&
         native_ignored_mcr(is[q], arm9)) {
       note_code_dep(b, pc + 8);
       emit_timing(e, *jc.ctx, pc, false);
@@ -2814,7 +2832,8 @@ bool translate_block(JitCpu &jc, u32 key, u8 *buf, size_t cap, Block &b,
           return true;
       }
       if (use_native && !thumb && (!native_limit || native_count < native_limit) &&
-          (native_ignored_mcr(is[i], arm9) || native_mrs_cpsr(is[i]) ||
+          (native_arm_pld(is[i], arm9) || native_ignored_mcr(is[i], arm9) ||
+           native_mrs_cpsr(is[i]) ||
            native_mrs_spsr(is[i]) || native_mcr_halt(is[i], arm9) ||
            native_mrc(is[i], arm9) || native_msr_flags(is[i]) || native_msr_control(is[i]) ||
            native_msr_spsr(is[i])))

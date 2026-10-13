@@ -621,6 +621,9 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     {Cpu::ARM9, false, {0xEE190F11, 0xEE111F10, 0xEE102F10, 0xE2800001}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // Cond=NV remains the unconditional/undefined space, not an ignored MCR.
     {Cpu::ARM9, false, {0xFE070F9A}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    // Unconditional PLD is a timing-only hint on ARM9 and undefined on ARM7.
+    {Cpu::ARM9, false, {0xF5D0F000, 0xE2800001}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    {Cpu::ARM7, false, {0xF5D0F000, 0xE2800001}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     // MOVS pc, lr (register form) from SVC: SPSR = SYS, lr = the halt stub.
     {Cpu::ARM9, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     {Cpu::ARM7, false, {0xE321F0D3, 0xE16FF001, 0xE1A0E002, 0xE1B0F00E}, {0, 0x1F, HALT_STUB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -686,6 +689,8 @@ void directed(u32 start = 0, u32 limit = ~0u) {
     const bool qdsp = !d.thumb && a9 && !d.code.empty() &&
         ds::arm::decode_arm(d.code[0]) >= AOp::QAdd &&
         ds::arm::decode_arm(d.code[0]) <= AOp::QDSub;
+    const bool pld = !d.thumb && a9 && !d.code.empty() &&
+        (d.code[0] >> 28) == 15 && ((d.code[0] >> 24) & 0xf7u) == 0xf5u;
     const bool dual = !d.thumb && a9 && !d.code.empty() &&
         (ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHImm ||
          ds::arm::decode_arm(d.code[0]) == AOp::LdrStrHReg) &&
@@ -695,7 +700,7 @@ void directed(u32 start = 0, u32 limit = ~0u) {
         (ds::arm::decode_arm(d.code[0]) == AOp::Swp ||
          ds::arm::decode_arm(d.code[0]) == AOp::Swpb))
       CHECK(jit::stats().instrs_translated > translated_before);
-    if (qdsp || (dual && d.regs[3] != BUF_BASE + 0x7fc))
+    if (qdsp || pld || (dual && d.regs[3] != BUF_BASE + 0x7fc))
       CHECK(jit::stats().instrs_fallback == fallback_before);
     jit::detach(mj.nds);
     if (!ok) std::fprintf(stderr, "directed case %u failed\n", n);
